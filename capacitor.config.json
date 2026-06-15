@@ -1,0 +1,10 @@
+{
+  "appId": "com.telecom.photoacceptance",
+  "appName": "工程照片采集",
+  "webDir": "dist",
+  "server": {
+    "cleartext": true,
+    "androidScheme": "http",
+    "allowNavigation": ["*"]
+  }
+}

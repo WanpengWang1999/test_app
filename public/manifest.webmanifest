@@ -1,0 +1,16 @@
+{
+  "name": "通信工程照片采集",
+  "short_name": "工程采集",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f5f7f4",
+  "theme_color": "#126b5a",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}
