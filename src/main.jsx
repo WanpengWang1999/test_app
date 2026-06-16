@@ -97,10 +97,11 @@ function progressPriority({ missingCount, localPending, failed, reviewStatus }) 
   return 4;
 }
 
-function readCaptureState(projectId) {
+function readCaptureState(projectId, userId) {
   if (!projectId) return {};
   try {
-    return JSON.parse(localStorage.getItem(`capture-state:${projectId}`) || '{}');
+    const scopedKey = userId ? `capture-state:${userId}:${projectId}` : '';
+    return JSON.parse((scopedKey ? localStorage.getItem(scopedKey) : '') || '{}');
   } catch {
     return {};
   }
@@ -400,7 +401,7 @@ function App() {
           {bottomViews.map((view) => <button key={view} type="button" className={activeView === view ? 'active' : ''} onClick={() => setActiveView(view)}>{VIEW_LABELS[view]}</button>)}
         </nav>
         <section className="panel feature-panel">
-          {activeView === 'projects' && <ProjectHome projects={projects} activeProjectId={activeProjectId} progress={progress} queue={queue} canManageProjects={canManageProjects} enterProject={enterProject} />}
+          {activeView === 'projects' && <ProjectHome projects={projects} activeProjectId={activeProjectId} progress={progress} queue={queue} session={session} canManageProjects={canManageProjects} enterProject={enterProject} />}
           {activeView === 'capture' && <CapturePanelV2 tree={tree} session={session} projectId={activeProjectId} photos={photos} queue={queue} reload={() => activeProjectId && loadProject(activeProjectId)} onQueued={async () => { await refreshQueue(); await syncQueue(); }} onPageChange={setCapturePage} onExitProject={leaveProject} backSignal={captureBackSignal} />}
           {activeView === 'sync' && <SyncCenter queue={queue} photos={photos} tree={tree} syncingIds={syncingIds} refreshQueue={refreshQueue} retry={(ids) => syncQueue(ids)} syncPaused={syncPaused} setSyncPaused={setSyncPaused} confirm={confirm} />}
           {activeView === 'progress' && <ProgressPanel progress={progress} queue={queue} projectId={activeProjectId} photos={photos} session={session} reload={() => activeProjectId && loadProject(activeProjectId)} confirm={confirm} />}
@@ -510,13 +511,13 @@ function SearchBox({ value, onChange, placeholder }) {
   return <div className="search-input"><input placeholder={placeholder} value={value} onChange={(event) => onChange(event.target.value)} />{value && <button type="button" className="search-clear" onClick={() => onChange('')}>清空</button>}</div>;
 }
 
-function ProjectHome({ projects, activeProjectId, progress, queue, canManageProjects, enterProject }) {
+function ProjectHome({ projects, activeProjectId, progress, queue, session, canManageProjects, enterProject }) {
   const [selectedProjectId, setSelectedProjectId] = useState('');
   const activeProgress = progress?.project && String(progress.project.id) === String(activeProjectId) ? progress : null;
   const projectQueueCount = (projectId) => queue.filter((item) => String(item.metadata?.projectId) === String(projectId)).length;
   const projectFailedCount = (projectId) => queue.filter((item) => String(item.metadata?.projectId) === String(projectId) && item.status === 'failed').length;
   const lastProject = projects.find((project) => {
-    const state = readCaptureState(project.id);
+    const state = readCaptureState(project.id, session?.user?.id);
     return state.taskPointId || state.devicePositionId;
   });
   const temporaryPending = activeProgress
@@ -801,12 +802,37 @@ function FailureSummary({ groups }) {
   );
 }
 
+function PhotoPreviewModal({ photo, onClose }) {
+  const [mode, setMode] = useState(photo.previewMode || 'watermarked');
+  const imagePath = mode === 'original' ? photo.originalPath : photo.watermarkedPath;
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal="true" onClick={onClose}>
+      <div className="photo-modal" onClick={(event) => event.stopPropagation()}>
+        <div className="section-head">
+          <div>
+            <h3>{photo.devicePositionName || photo.fileName}</h3>
+            <p className="hint">{photo.deviceType ? `${photo.deviceType} · ` : ''}{displayPhotoType(photo.photoType)}{photo.capturedBy ? ` · ${photo.capturedBy}` : ''}</p>
+          </div>
+          <button type="button" className="ghost" onClick={onClose}>关闭</button>
+        </div>
+        <div className="inline-actions">
+          <button type="button" className={mode === 'watermarked' ? 'active' : 'ghost'} onClick={() => setMode('watermarked')}>查看水印图</button>
+          <button type="button" className={mode === 'original' ? 'active' : 'ghost'} onClick={() => setMode('original')}>查看原图</button>
+        </div>
+        <img src={uploadUrl(imagePath)} alt={photo.fileName} />
+        <p className="hint">{imagePath}</p>
+      </div>
+    </div>
+  );
+}
+
 function ProgressPanel({ progress, queue, projectId, photos, session, reload, confirm }) {
   const [selectedTaskId, setSelectedTaskId] = useState('');
   const [selectedDeviceId, setSelectedDeviceId] = useState('');
   const [projectKeyword, setProjectKeyword] = useState('');
   const [deviceKeyword, setDeviceKeyword] = useState('');
   const [photoKeyword, setPhotoKeyword] = useState('');
+  const [previewPhoto, setPreviewPhoto] = useState(null);
   if (!progress) return <EmptyState title="暂无进度" text="选择项目并联网后可查看采集进度。" />;
   const selectedTask = progress.tasks.find((task) => String(task.id) === String(selectedTaskId));
   const selectedDevice = selectedTask?.devices.find((device) => String(device.id) === String(selectedDeviceId));
@@ -832,7 +858,7 @@ function ProgressPanel({ progress, queue, projectId, photos, session, reload, co
     const synced = syncedForDevice(selectedDevice.id);
     const visibleLocal = local.filter((item) => includesKeyword([item.metadata?.devicePositionName, displayPhotoType(item.metadata?.photoType), item.status, item.lastError], photoKeyword));
     const visibleSynced = synced.filter((photo) => includesKeyword([photo.devicePositionName, photo.deviceType, displayPhotoType(photo.photoType), photo.fileName, photo.capturedBy], photoKeyword));
-    return <div className="view-stack"><div className="capture-detail-head"><button type="button" className="ghost" onClick={() => setSelectedDeviceId('')}>返回设备列表</button><div><h2>{selectedDevice.name}</h2><p className="hint">{selectedTask.name} · {selectedDevice.deviceType}</p></div></div><div className="stat-row"><div><strong>{synced.length}</strong><span>已同步照片</span></div><div><strong>{local.length}</strong><span>本地待同步</span></div><div><strong>{selectedDevice.missingRequired.length}</strong><span>缺失必拍</span></div></div>{selectedDevice.missingRequired.length > 0 && <div className="missing-box">缺少：{selectedDevice.missingRequired.map(displayPhotoType).join('、')}</div>}<SearchBox placeholder="搜索照片类型、文件名或采集人" value={photoKeyword} onChange={setPhotoKeyword} /><h3>本地待同步</h3>{visibleLocal.length === 0 ? <p className="hint">没有匹配的本地待同步照片。</p> : <LocalPhotoGrid items={visibleLocal} />}<h3>已同步照片</h3>{visibleSynced.length === 0 ? <p className="hint">没有匹配的已同步照片。</p> : <div className="photo-grid compact">{visibleSynced.map((photo) => <div key={photo.id} className="photo-card"><img src={uploadUrl(photo.watermarkedPath)} alt={photo.fileName} /><strong>{displayPhotoType(photo.photoType)}</strong><small>{photo.fileName}</small>{photo.qualityWarnings?.length > 0 && <small className="warning-text">{photo.qualityWarnings.join('、')}</small>}{(session?.user.role !== 'collector' || photo.capturedById === session?.user.id) && <button type="button" className="ghost" onClick={() => deletePhoto(photo)}>删除并重拍</button>}</div>)}</div>}</div>;
+    return <div className="view-stack"><div className="capture-detail-head"><button type="button" className="ghost" onClick={() => setSelectedDeviceId('')}>返回设备列表</button><div><h2>{selectedDevice.name}</h2><p className="hint">{selectedTask.name} · {selectedDevice.deviceType}</p></div></div><div className="stat-row"><div><strong>{synced.length}</strong><span>已同步照片</span></div><div><strong>{local.length}</strong><span>本地待同步</span></div><div><strong>{selectedDevice.missingRequired.length}</strong><span>缺失必拍</span></div></div>{selectedDevice.missingRequired.length > 0 && <div className="missing-box">缺少：{selectedDevice.missingRequired.map(displayPhotoType).join('、')}</div>}<SearchBox placeholder="搜索照片类型、文件名或采集人" value={photoKeyword} onChange={setPhotoKeyword} /><h3>本地待同步</h3>{visibleLocal.length === 0 ? <p className="hint">没有匹配的本地待同步照片。</p> : <LocalPhotoGrid items={visibleLocal} />}<h3>已同步照片</h3>{visibleSynced.length === 0 ? <p className="hint">没有匹配的已同步照片。</p> : <div className="photo-grid compact">{visibleSynced.map((photo) => { const canDelete = session?.user.role !== 'collector' || Number(photo.capturedById) === Number(session?.user.id); return <div key={photo.id} className="photo-card"><button type="button" className="image-button" onClick={() => setPreviewPhoto(photo)}><img src={uploadUrl(photo.watermarkedPath)} alt={photo.fileName} /></button><strong>{displayPhotoType(photo.photoType)}</strong><small>{photo.fileName}</small>{photo.qualityWarnings?.length > 0 && <small className="warning-text">{photo.qualityWarnings.join('、')}</small>}<div className="photo-path-actions"><button type="button" className="ghost tiny" onClick={() => setPreviewPhoto({ ...photo, previewMode: 'watermarked' })}>水印图</button><button type="button" className="ghost tiny" onClick={() => setPreviewPhoto({ ...photo, previewMode: 'original' })}>原图</button></div>{canDelete && <button type="button" className="ghost" onClick={() => deletePhoto(photo)}>删除并重拍</button>}</div>; })}</div>}{previewPhoto && <PhotoPreviewModal photo={previewPhoto} onClose={() => setPreviewPhoto(null)} />}</div>;
   }
   if (selectedTask) {
     const visibleDevices = selectedTask.devices.filter((device) => includesKeyword([device.name, device.code, device.deviceType, ...(device.missingRequired || []).map(displayPhotoType)], deviceKeyword)).sort((a, b) => {
@@ -1217,6 +1243,7 @@ function PreviewList({ title, items, render }) {
 }
 
 function RecycleBin({ projectId, recycle, reload, confirm }) {
+  const [previewPhoto, setPreviewPhoto] = useState(null);
   async function restore(photo) {
     await api(`/api/projects/${projectId}/photos/${photo.id}/restore`, { method: 'POST' });
     await reload();
@@ -1233,7 +1260,7 @@ function RecycleBin({ projectId, recycle, reload, confirm }) {
     await api(`/api/projects/${projectId}/photos/${photo.id}/permanent`, { method: 'DELETE' });
     await reload();
   }
-  return <section><h3>回收站</h3><p className="hint">照片保留 {recycle?.retentionDays || 30} 天，可恢复或彻底删除。</p>{!recycle?.photos?.length ? <p className="hint">回收站为空。</p> : <div className="photo-grid compact">{recycle.photos.map((photo) => <div key={photo.id} className="photo-card"><img src={uploadUrl(photo.watermarkedPath)} alt={photo.fileName} /><strong>{displayPhotoType(photo.photoType)}</strong><small>{photo.fileName}</small><small>删除时间：{new Date(photo.deletedAt).toLocaleString()}</small><button type="button" onClick={() => restore(photo)}>恢复</button><button type="button" className="ghost danger" onClick={() => remove(photo)}>彻底删除</button></div>)}</div>}</section>;
+  return <section><h3>回收站</h3><p className="hint">照片保留 {recycle?.retentionDays || 30} 天，可恢复或彻底删除。</p>{!recycle?.photos?.length ? <p className="hint">回收站为空。</p> : <div className="photo-grid compact">{recycle.photos.map((photo) => <div key={photo.id} className="photo-card"><button type="button" className="image-button" onClick={() => setPreviewPhoto(photo)}><img src={uploadUrl(photo.watermarkedPath)} alt={photo.fileName} /></button><strong>{displayPhotoType(photo.photoType)}</strong><small>{photo.fileName}</small><small>删除时间：{new Date(photo.deletedAt).toLocaleString()}</small><div className="photo-path-actions"><button type="button" className="ghost tiny" onClick={() => setPreviewPhoto({ ...photo, previewMode: 'watermarked' })}>水印图</button><button type="button" className="ghost tiny" onClick={() => setPreviewPhoto({ ...photo, previewMode: 'original' })}>原图</button></div><button type="button" onClick={() => restore(photo)}>恢复</button><button type="button" className="ghost danger" onClick={() => remove(photo)}>彻底删除</button></div>)}</div>}{previewPhoto && <PhotoPreviewModal photo={previewPhoto} onClose={() => setPreviewPhoto(null)} />}</section>;
 }
 
 function AccountPanel({ session, isSuperAdmin, confirm }) {

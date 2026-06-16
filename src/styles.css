@@ -860,6 +860,18 @@ input[type="file"] {
   display: block;
 }
 
+.photo-path-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.ghost.tiny {
+  min-height: 34px;
+  padding: 6px 8px;
+  font-size: 13px;
+}
+
 .capture-review {
   border-top: 1px solid #dde5df;
   padding-top: 14px;

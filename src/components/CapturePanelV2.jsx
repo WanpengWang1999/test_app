@@ -23,6 +23,10 @@ function displayPhotoType(type) {
   return type === 'extra' ? '额外拍摄照片' : type;
 }
 
+function normalizedDeviceType(type) {
+  return type || '通用';
+}
+
 function statusClass({ missingCount, localPending, failed }) {
   if (failed > 0) return 'status-failed';
   if (localPending > 0) return 'status-pending';
@@ -65,7 +69,8 @@ export default function CapturePanelV2({
   onExitProject,
   backSignal
 }) {
-  const stateKey = projectId ? `capture-state:${projectId}` : '';
+  const userId = session?.user?.id || 'anonymous';
+  const stateKey = projectId ? `capture-state:${userId}:${projectId}` : '';
   const savedState = useMemo(() => {
     if (!stateKey) return {};
     try {
@@ -90,15 +95,16 @@ export default function CapturePanelV2({
   const [previewPhoto, setPreviewPhoto] = useState(null);
   const [photosOpen, setPhotosOpen] = useState(false);
   const confirmRef = useRef(null);
+  const captureTopRef = useRef(null);
   const { confirm, dialog: confirmDialog } = useConfirmDialog();
 
   const task = useMemo(() => tree?.tasks.find((item) => String(item.id) === String(taskPointId)), [tree, taskPointId]);
   const selectedDevice = useMemo(() => task?.devices.find((item) => String(item.id) === String(devicePositionId)), [task, devicePositionId]);
-  const selectedDeviceType = selectedDevice?.deviceType || '通用';
+  const selectedDeviceType = normalizedDeviceType(selectedDevice?.deviceType);
   const photoTypes = useMemo(() => {
     const all = tree?.photoTypes || [];
-    const exact = all.filter((type) => (type.deviceType || '通用') === selectedDeviceType);
-    return exact.length ? exact : all.filter((type) => (type.deviceType || '通用') === '通用');
+    const exact = all.filter((type) => normalizedDeviceType(type.deviceType) === selectedDeviceType);
+    return exact.length ? exact : all.filter((type) => normalizedDeviceType(type.deviceType) === '通用');
   }, [tree, selectedDeviceType]);
 
   const selectedDevicePhotos = sortPhotos(photos.filter((photo) => String(photo.devicePositionId) === String(selectedDevice?.id)));
@@ -107,8 +113,8 @@ export default function CapturePanelV2({
   const taskPhotos = photos.filter((photo) => String(photo.taskPointId) === String(task?.id));
   const canReviewTemporary = session?.user.role !== 'collector';
   const deviceTypeOptions = useMemo(() => [...new Set([
-    ...(tree?.tasks || []).flatMap((item) => item.devices.map((device) => device.deviceType || '通用')),
-    ...(tree?.photoTypes || []).map((type) => type.deviceType || '通用'),
+    ...(tree?.tasks || []).flatMap((item) => item.devices.map((device) => normalizedDeviceType(device.deviceType))),
+    ...(tree?.photoTypes || []).map((type) => normalizedDeviceType(type.deviceType)),
     'RRU',
     'BBU',
     '天线',
@@ -131,10 +137,18 @@ export default function CapturePanelV2({
   ]);
   const missingTypes = requiredTypes.filter((type) => !capturedTypes.has(type));
 
+  function firstPhotoTypeForDevice(device = selectedDevice) {
+    const deviceType = normalizedDeviceType(device?.deviceType);
+    const all = tree?.photoTypes || [];
+    const exact = all.filter((type) => normalizedDeviceType(type.deviceType) === deviceType);
+    const available = exact.length ? exact : all.filter((type) => normalizedDeviceType(type.deviceType) === '通用');
+    return available[0]?.name || 'extra';
+  }
+
   function requiredForDevice(device) {
-    const typeName = device.deviceType || '通用';
-    const exact = (tree?.photoTypes || []).filter((type) => type.required && (type.deviceType || '通用') === typeName).map((type) => type.name);
-    const common = (tree?.photoTypes || []).filter((type) => type.required && (type.deviceType || '通用') === '通用').map((type) => type.name);
+    const typeName = normalizedDeviceType(device.deviceType);
+    const exact = (tree?.photoTypes || []).filter((type) => type.required && normalizedDeviceType(type.deviceType) === typeName).map((type) => type.name);
+    const common = (tree?.photoTypes || []).filter((type) => type.required && normalizedDeviceType(type.deviceType) === '通用').map((type) => type.name);
     return exact.length ? exact : common;
   }
 
@@ -201,9 +215,10 @@ export default function CapturePanelV2({
   }, [tree?.id]);
 
   useEffect(() => {
-    if (!photoType && photoTypes[0]) setPhotoType(photoTypes[0].name);
-    if (photoTypes.length > 0 && photoType !== 'extra' && !photoTypes.some((type) => type.name === photoType)) setPhotoType(photoTypes[0].name);
-  }, [photoTypes, photoType]);
+    if (!selectedDevice) return;
+    if (!photoType) setPhotoType(firstPhotoTypeForDevice(selectedDevice));
+    if (photoType !== 'extra' && photoTypes.length > 0 && !photoTypes.some((type) => type.name === photoType)) setPhotoType(firstPhotoTypeForDevice(selectedDevice));
+  }, [selectedDevice?.id, photoTypes, photoType]);
 
   useEffect(() => {
     if (!draft) return;
@@ -235,6 +250,7 @@ export default function CapturePanelV2({
   function enterTask(nextTask) {
     setTaskPointId(String(nextTask.id));
     setDevicePositionId('');
+    setPhotoType('');
     setDraft(null);
     setMessage('');
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -243,6 +259,7 @@ export default function CapturePanelV2({
   function leaveTask() {
     setTaskPointId('');
     setDevicePositionId('');
+    setPhotoType('');
     setDraft(null);
     setMessage('');
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -250,6 +267,7 @@ export default function CapturePanelV2({
 
   function enterDevice(device) {
     setDevicePositionId(String(device.id));
+    setPhotoType(firstPhotoTypeForDevice(device));
     setDraft(null);
     setMessage('');
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -257,6 +275,7 @@ export default function CapturePanelV2({
 
   function leaveDevice() {
     setDevicePositionId('');
+    setPhotoType('');
     setDraft(null);
     setMessage('');
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -283,6 +302,7 @@ export default function CapturePanelV2({
       setShowTempTaskForm(false);
       setTaskPointId(String(result.taskPoint.id));
       setDevicePositionId('');
+      setPhotoType('');
       setMessage(`已新增临时任务点：${result.taskPoint.name}`);
       await reload();
     } catch (err) {
@@ -309,7 +329,7 @@ export default function CapturePanelV2({
       setTempDevice({ name: '', code: '', deviceType: '通用' });
       setShowTempDeviceForm(false);
       setDevicePositionId(String(result.device.id));
-      setPhotoType('');
+      setPhotoType(firstPhotoTypeForDevice(result.device));
       setMessage(`已新增临时设备位：${result.device.name}`);
       await reload();
     } catch (err) {
@@ -406,6 +426,14 @@ export default function CapturePanelV2({
     setMessage('照片已加入同步队列，并自动切换到下一类型。');
     selectNextPhotoType();
     await onQueued();
+  }
+
+  function beginRetake(photo) {
+    setPhotoType(photo.photoType || firstPhotoTypeForDevice());
+    setPhotosOpen(false);
+    setPreviewPhoto(null);
+    setMessage(`已删除原照片，请重新拍摄：${displayPhotoType(photo.photoType)}`);
+    requestAnimationFrame(() => captureTopRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
   }
 
   if (!tree) return <EmptyState title="请选择项目" text="从项目首页选择项目后进入任务点采集。" />;
@@ -522,7 +550,7 @@ export default function CapturePanelV2({
   }
 
   return (
-    <div className="view-stack capture-screen capture-device-screen">
+    <div className="view-stack capture-screen capture-device-screen" ref={captureTopRef}>
       <PageHeader title={selectedDevice.name} subtitle={`${tree.name} / ${task.name} / ${selectedDevice.deviceType}`} onBack={leaveDevice} backText="返回设备" />
       <Breadcrumb items={[{ label: tree.name, onClick: leaveTask }, { label: task.name, onClick: leaveDevice }, { label: selectedDevice.name }]} />
       <div className="device-capture-summary">
@@ -558,7 +586,7 @@ export default function CapturePanelV2({
           </div>
           <button type="button" className="ghost" onClick={() => setPhotosOpen(!photosOpen)}>{photosOpen ? '收起' : `查看 ${selectedLocalPhotos.length + selectedDevicePhotos.length} 张`}</button>
         </div>
-        {photosOpen && <DevicePhotoReview projectId={projectId} device={selectedDevice} localPhotos={selectedLocalPhotos} photos={selectedDevicePhotos} session={session} onPreview={setPreviewPhoto} reload={reload} confirm={confirm} />}
+        {photosOpen && <DevicePhotoReview projectId={projectId} device={selectedDevice} localPhotos={selectedLocalPhotos} photos={selectedDevicePhotos} session={session} onPreview={setPreviewPhoto} reload={reload} confirm={confirm} onRetake={beginRetake} />}
       </section>
       {previewPhoto && <PhotoPreviewModal photo={previewPhoto} onClose={() => setPreviewPhoto(null)} />}
       {confirmDialog}
@@ -610,16 +638,16 @@ const PhotoConfirm = React.forwardRef(function PhotoConfirm({ draft, onCancel, o
   );
 });
 
-function DevicePhotoReview({ projectId, device, localPhotos, photos, session, onPreview, reload, confirm }) {
+function DevicePhotoReview({ projectId, device, localPhotos, photos, session, onPreview, reload, confirm, onRetake }) {
   const [selectedIds, setSelectedIds] = useState([]);
   const [retakeReason, setRetakeReason] = useState(RETAKE_REASONS[0]);
-  const selectablePhotos = photos.filter((photo) => session?.user.role !== 'collector' || photo.capturedById === session?.user.id);
+  const selectablePhotos = photos.filter((photo) => session?.user.role !== 'collector' || Number(photo.capturedById) === Number(session?.user.id));
   const allSelected = selectablePhotos.length > 0 && selectablePhotos.every((photo) => selectedIds.includes(photo.id));
 
   async function deletePhoto(photo) {
     const ok = await confirm({
       title: '删除并重拍',
-      message: '照片会进入回收站，可由管理员恢复。',
+      message: '照片会进入回收站，可由管理员恢复。确认后会回到当前照片类型。',
       details: [`文件：${photo.fileName}`, `设备：${device.name}`, `类型：${displayPhotoType(photo.photoType)}`, `原因：${retakeReason}`],
       confirmText: '删除并重拍',
       danger: true
@@ -627,10 +655,12 @@ function DevicePhotoReview({ projectId, device, localPhotos, photos, session, on
     if (!ok) return;
     await api(`/api/projects/${projectId}/photos/${photo.id}`, { method: 'DELETE', body: JSON.stringify({ reason: `删除重拍：${retakeReason}` }) });
     await reload();
+    onRetake?.(photo);
   }
 
   async function deleteSelected() {
     if (selectedIds.length === 0) return;
+    const selectedPhotos = selectablePhotos.filter((photo) => selectedIds.includes(photo.id));
     const ok = await confirm({
       title: '批量删除并重拍',
       message: `确认删除选中的 ${selectedIds.length} 张照片？`,
@@ -642,6 +672,7 @@ function DevicePhotoReview({ projectId, device, localPhotos, photos, session, on
     await Promise.all(selectedIds.map((id) => api(`/api/projects/${projectId}/photos/${id}`, { method: 'DELETE', body: JSON.stringify({ reason: `批量删除重拍：${retakeReason}` }) })));
     setSelectedIds([]);
     await reload();
+    if (selectedPhotos[0]) onRetake?.(selectedPhotos[0]);
   }
 
   function toggleSelected(id) {
@@ -676,7 +707,7 @@ function DevicePhotoReview({ projectId, device, localPhotos, photos, session, on
       ) : (
         <div className="photo-grid compact">
           {photos.map((photo) => {
-            const canDelete = session?.user.role !== 'collector' || photo.capturedById === session?.user.id;
+            const canDelete = session?.user.role !== 'collector' || Number(photo.capturedById) === Number(session?.user.id);
             return (
               <div key={photo.id} className="photo-card">
                 {canDelete && <label className="photo-select"><input type="checkbox" checked={selectedIds.includes(photo.id)} onChange={() => toggleSelected(photo.id)} />选择</label>}
@@ -684,6 +715,10 @@ function DevicePhotoReview({ projectId, device, localPhotos, photos, session, on
                 <strong>{displayPhotoType(photo.photoType)}</strong>
                 <small>{photo.fileName}</small>
                 {photo.qualityWarnings?.length > 0 && <small className="warning-text">{photo.qualityWarnings.join('、')}</small>}
+                <div className="photo-path-actions">
+                  <button type="button" className="ghost tiny" onClick={() => onPreview({ ...photo, previewMode: 'watermarked' })}>水印图</button>
+                  <button type="button" className="ghost tiny" onClick={() => onPreview({ ...photo, previewMode: 'original' })}>原图</button>
+                </div>
                 {canDelete && <button type="button" className="ghost danger-soft" onClick={() => deletePhoto(photo)}>删除并重拍</button>}
               </div>
             );
@@ -738,9 +773,11 @@ function EmptyState({ title, text }) {
 }
 
 function PhotoPreviewModal({ photo, onClose }) {
+  const [mode, setMode] = useState(photo.previewMode || 'watermarked');
+  const imagePath = mode === 'original' ? photo.originalPath : photo.watermarkedPath;
   return (
-    <div className="modal-backdrop" role="dialog" aria-modal="true">
-      <div className="photo-modal">
+    <div className="modal-backdrop" role="dialog" aria-modal="true" onClick={onClose}>
+      <div className="photo-modal" onClick={(event) => event.stopPropagation()}>
         <div className="section-head">
           <div>
             <h3>{photo.devicePositionName}</h3>
@@ -748,8 +785,12 @@ function PhotoPreviewModal({ photo, onClose }) {
           </div>
           <button type="button" className="ghost" onClick={onClose}>关闭</button>
         </div>
-        <img src={uploadUrl(photo.watermarkedPath)} alt={photo.fileName} />
-        <p className="hint">{photo.fileName}</p>
+        <div className="inline-actions">
+          <button type="button" className={mode === 'watermarked' ? 'active' : 'ghost'} onClick={() => setMode('watermarked')}>查看水印图</button>
+          <button type="button" className={mode === 'original' ? 'active' : 'ghost'} onClick={() => setMode('original')}>查看原图</button>
+        </div>
+        <img src={uploadUrl(imagePath)} alt={photo.fileName} />
+        <p className="hint">{mode === 'original' ? photo.originalPath : photo.watermarkedPath}</p>
       </div>
     </div>
   );
