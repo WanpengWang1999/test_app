@@ -15,6 +15,10 @@ import {
   ROLE_COLLECTOR,
   ROLE_PROJECT_ADMIN,
   ROLE_SUPER_ADMIN,
+  STATUS_ACTIVE,
+  STATUS_DISABLED,
+  STATUS_PENDING,
+  STATUS_REJECTED,
   backupDir,
   dataDir,
   db,
@@ -23,6 +27,14 @@ import {
   rowToUser,
   uploadDir
 } from './db.js';
+import {
+  USER_STATUSES,
+  canManageTargetRole,
+  canSetUserStatus,
+  normalizeUserStatus,
+  registrationDefaults,
+  shouldAllowLogin
+} from './accountPolicy.js';
 import { downloadName, ensureDir, hasValue, padSequence, parseJson, pick, publicPath, sanitizeName } from './utils.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -103,7 +115,15 @@ app.get('/api/diagnostics', auth, (req, res) => {
   }
   res.json({
     status: database && uploadWritable ? 'ok' : 'warning',
-    user: { id: req.user.id, username: req.user.username, displayName: req.user.displayName, role: req.user.role },
+    user: {
+      id: req.user.id,
+      username: req.user.username,
+      phone: req.user.phone,
+      displayName: req.user.displayName,
+      company: req.user.company,
+      role: req.user.role,
+      status: req.user.status
+    },
     database,
     uploadWritable,
     dataDir,
@@ -124,6 +144,10 @@ function broadcast(type, payload) {
   for (const client of wss.clients) {
     if (client.readyState === 1) client.send(message);
   }
+}
+
+function displayPhotoType(type) {
+  return type === 'extra' || type === '额外拍摄照片' ? '额外拍摄照片' : type;
 }
 
 function base64UrlEncode(value) {
@@ -149,7 +173,7 @@ function readSignedToken(token) {
   const data = parseJson(base64UrlDecode(payload), null);
   if (!data?.uid || !data?.iat || Date.now() - Number(data.iat) > TOKEN_TTL_MS) return null;
   const row = db.prepare('SELECT * FROM users WHERE id = ?').get(Number(data.uid));
-  if (!row || row.deleted_at) return null;
+  if (!shouldAllowLogin(row)) return null;
   return rowToUser(row);
 }
 
@@ -157,7 +181,7 @@ function auth(req, res, next) {
   const token = (req.headers.authorization || '').replace(/^Bearer\s+/i, '') || req.query.token;
   const cachedUser = tokens.get(token);
   const freshRow = cachedUser ? db.prepare('SELECT * FROM users WHERE id = ?').get(cachedUser.id) : null;
-  const user = freshRow && !freshRow.deleted_at ? rowToUser(freshRow) : readSignedToken(token);
+  const user = shouldAllowLogin(freshRow) ? rowToUser(freshRow) : readSignedToken(token);
   if (!user) {
     if (token) tokens.delete(token);
     return res.status(401).json({ error: '未登录或登录已过期' });
@@ -170,6 +194,51 @@ const isSuperAdmin = (user) => user?.role === ROLE_SUPER_ADMIN;
 const isProjectAdmin = (user) => user?.role === ROLE_PROJECT_ADMIN;
 const isCollector = (user) => user?.role === ROLE_COLLECTOR;
 const canCreateProject = (user) => isSuperAdmin(user) || isProjectAdmin(user);
+const VALID_ROLES = [ROLE_SUPER_ADMIN, ROLE_PROJECT_ADMIN, ROLE_COLLECTOR];
+
+function activeSuperAdminCount() {
+  return db.prepare('SELECT COUNT(*) AS count FROM users WHERE role = ? AND status = ? AND deleted_at IS NULL').get(ROLE_SUPER_ADMIN, STATUS_ACTIVE).count;
+}
+
+function normalizePhone(phone) {
+  return String(phone || '').replace(/\s+/g, '');
+}
+
+function validatePhone(phone) {
+  return /^\d{6,20}$/.test(phone);
+}
+
+function selectUserRows(whereSql = '', params = []) {
+  return db.prepare(`SELECT id, username, phone, display_name AS displayName, company, role, status,
+      approved_by AS approvedBy, approved_at AS approvedAt, rejected_by AS rejectedBy, rejected_at AS rejectedAt,
+      deleted_at AS deletedAt, created_at AS createdAt
+    FROM users ${whereSql}
+    ORDER BY status = 'pending' DESC, deleted_at IS NOT NULL, id`).all(...params);
+}
+
+function getUserById(id) {
+  return db.prepare(`SELECT id, username, phone, display_name AS displayName, company, role, status,
+      approved_by AS approvedBy, approved_at AS approvedAt, rejected_by AS rejectedBy, rejected_at AS rejectedAt,
+      deleted_at AS deletedAt, created_at AS createdAt
+    FROM users WHERE id = ?`).get(id);
+}
+
+function findLoginUser(identifier) {
+  const login = String(identifier || '').trim();
+  return db.prepare('SELECT * FROM users WHERE phone = ? OR username = ?').get(login, login);
+}
+
+function requireCanManageUser(actor, targetRole, res) {
+  if (!isSuperAdmin(actor) && !isProjectAdmin(actor)) {
+    res.status(403).json({ error: '需要管理员权限' });
+    return false;
+  }
+  if (!canManageTargetRole(actor.role, targetRole)) {
+    res.status(403).json({ error: '无权管理该账号' });
+    return false;
+  }
+  return true;
+}
 
 function getProject(id) {
   return db.prepare('SELECT * FROM projects WHERE id = ?').get(id);
@@ -579,10 +648,36 @@ async function buildImportTemplate() {
   return workbook.xlsx.writeBuffer();
 }
 
+app.post('/api/auth/register', (req, res) => {
+  const phone = normalizePhone(req.body.phone);
+  const displayName = String(req.body.displayName || '').trim();
+  const company = String(req.body.company || '').trim();
+  const password = String(req.body.password || '');
+  if (!validatePhone(phone)) return res.status(400).json({ error: '请输入有效手机号' });
+  if (!displayName || !company || password.length < 6) return res.status(400).json({ error: '姓名、工作单位和至少 6 位密码不能为空' });
+  const defaults = registrationDefaults();
+  try {
+    const result = db.prepare(`INSERT INTO users (username, phone, password_hash, display_name, company, role, status)
+      VALUES (?, ?, ?, ?, ?, ?, ?)`)
+      .run(phone, phone, hashPassword(password), displayName, company, defaults.role, defaults.status);
+    res.status(201).json({ id: result.lastInsertRowid, status: defaults.status, role: defaults.role });
+  } catch {
+    res.status(409).json({ error: '手机号已注册' });
+  }
+});
+
 app.post('/api/auth/login', (req, res) => {
-  const { username, password } = req.body;
-  const row = db.prepare('SELECT * FROM users WHERE username = ?').get(username);
-  if (!row || row.deleted_at || row.password_hash !== hashPassword(password)) return res.status(401).json({ error: '用户名或密码错误' });
+  const { password } = req.body;
+  const identifier = req.body.phone || req.body.username;
+  const row = findLoginUser(identifier);
+  if (!row || row.password_hash !== hashPassword(password)) return res.status(401).json({ error: '手机号或密码错误' });
+  const status = normalizeUserStatus(row.status);
+  if (!shouldAllowLogin(row)) {
+    if (status === STATUS_PENDING) return res.status(403).json({ error: '账号待管理员审批后才能登录' });
+    if (status === STATUS_REJECTED) return res.status(403).json({ error: '账号注册申请已被拒绝' });
+    if (status === STATUS_DISABLED || row.deleted_at) return res.status(403).json({ error: '账号已停用' });
+    return res.status(403).json({ error: '账号状态异常' });
+  }
   const user = rowToUser(row);
   const token = createToken(user);
   tokens.set(token, user);
@@ -592,39 +687,122 @@ app.post('/api/auth/login', (req, res) => {
 app.get('/api/users', auth, (req, res) => {
   if (!isSuperAdmin(req.user) && !isProjectAdmin(req.user)) return res.status(403).json({ error: '需要管理员权限' });
   const users = isSuperAdmin(req.user)
-    ? db.prepare('SELECT id, username, display_name AS displayName, role, deleted_at AS deletedAt, created_at AS createdAt FROM users ORDER BY deleted_at IS NOT NULL, id').all()
-    : db.prepare('SELECT id, username, display_name AS displayName, role, deleted_at AS deletedAt, created_at AS createdAt FROM users WHERE role = ? OR id = ? ORDER BY deleted_at IS NOT NULL, id').all(ROLE_COLLECTOR, req.user.id);
+    ? selectUserRows()
+    : selectUserRows('WHERE role = ? OR id = ?', [ROLE_COLLECTOR, req.user.id]);
   res.json({ users });
 });
 
 app.post('/api/users', auth, (req, res) => {
-  const { username, password, displayName, role } = req.body;
-  const allowedRoles = [ROLE_SUPER_ADMIN, ROLE_PROJECT_ADMIN, ROLE_COLLECTOR];
-  if (!username || !password || !displayName || !allowedRoles.includes(role)) return res.status(400).json({ error: '用户信息不完整' });
+  const phone = normalizePhone(req.body.phone || req.body.username);
+  const password = String(req.body.password || '');
+  const displayName = String(req.body.displayName || '').trim();
+  const company = String(req.body.company || '').trim();
+  const role = String(req.body.role || ROLE_COLLECTOR);
+  const status = USER_STATUSES.includes(req.body.status) ? req.body.status : STATUS_ACTIVE;
+  if (!validatePhone(phone) || !password || !displayName || !company || !VALID_ROLES.includes(role)) return res.status(400).json({ error: '用户信息不完整' });
   if (!isSuperAdmin(req.user) && !isProjectAdmin(req.user)) return res.status(403).json({ error: '需要管理员权限' });
-  if (isProjectAdmin(req.user) && role !== ROLE_COLLECTOR) return res.status(403).json({ error: '项目管理员只能创建采集员账号' });
+  if (!canManageTargetRole(req.user.role, role)) return res.status(403).json({ error: '无权创建该角色账号' });
   try {
-    const result = db.prepare('INSERT INTO users (username, password_hash, display_name, role) VALUES (?, ?, ?, ?)').run(username, hashPassword(password), displayName, role);
+    const now = new Date().toISOString();
+    const result = db.prepare(`INSERT INTO users
+      (username, phone, password_hash, display_name, company, role, status, approved_by, approved_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(phone, phone, hashPassword(password), displayName, company, role, status, status === STATUS_ACTIVE ? req.user.id : null, status === STATUS_ACTIVE ? now : null);
     res.status(201).json({ id: result.lastInsertRowid });
   } catch {
-    res.status(409).json({ error: '用户名已存在' });
+    res.status(409).json({ error: '手机号已存在' });
   }
+});
+
+app.patch('/api/users/:id', auth, (req, res) => {
+  const userId = Number(req.params.id);
+  const target = getUserById(userId);
+  if (!target) return res.status(404).json({ error: '账号不存在' });
+  const nextRole = String(req.body.role || target.role);
+  if (!VALID_ROLES.includes(nextRole)) return res.status(400).json({ error: '角色无效' });
+  if (!requireCanManageUser(req.user, target.role, res)) return;
+  if (nextRole !== target.role && !canManageTargetRole(req.user.role, nextRole)) return res.status(403).json({ error: '无权设置该角色' });
+  if (target.role === ROLE_SUPER_ADMIN && nextRole !== ROLE_SUPER_ADMIN && normalizeUserStatus(target.status) === STATUS_ACTIVE && activeSuperAdminCount() <= 1) {
+    return res.status(400).json({ error: '至少需要保留一个已启用的完全管理员账号' });
+  }
+  const phone = normalizePhone(req.body.phone ?? target.phone ?? target.username);
+  const displayName = String(req.body.displayName ?? target.displayName ?? '').trim();
+  const company = String(req.body.company ?? target.company ?? '').trim();
+  if (!validatePhone(phone) || !displayName || !company) return res.status(400).json({ error: '手机号、姓名和工作单位不能为空' });
+  try {
+    db.prepare('UPDATE users SET username = ?, phone = ?, display_name = ?, company = ?, role = ? WHERE id = ?')
+      .run(phone, phone, displayName, company, nextRole, userId);
+    res.json({ user: getUserById(userId) });
+  } catch {
+    res.status(409).json({ error: '手机号已存在' });
+  }
+});
+
+app.patch('/api/users/:id/status', auth, (req, res) => {
+  const userId = Number(req.params.id);
+  const target = getUserById(userId);
+  if (!target) return res.status(404).json({ error: '账号不存在' });
+  const nextStatus = String(req.body.status || '');
+  const decision = canSetUserStatus({
+    actorRole: req.user.role,
+    targetRole: target.role,
+    nextStatus,
+    activeSuperAdminCount: activeSuperAdminCount(),
+    isSelf: target.id === req.user.id
+  });
+  if (!decision.allowed) return res.status(403).json({ error: decision.error });
+  const now = new Date().toISOString();
+  const fields = {
+    approvedBy: null,
+    approvedAt: null,
+    rejectedBy: null,
+    rejectedAt: null
+  };
+  if (nextStatus === STATUS_ACTIVE) {
+    fields.approvedBy = req.user.id;
+    fields.approvedAt = now;
+  }
+  if (nextStatus === STATUS_REJECTED) {
+    fields.rejectedBy = req.user.id;
+    fields.rejectedAt = now;
+  }
+  db.prepare(`UPDATE users SET status = ?, approved_by = ?, approved_at = ?, rejected_by = ?, rejected_at = ?
+    WHERE id = ?`).run(nextStatus, fields.approvedBy, fields.approvedAt, fields.rejectedBy, fields.rejectedAt, userId);
+  if (nextStatus !== STATUS_ACTIVE) {
+    for (const [token, user] of tokens.entries()) {
+      if (user.id === userId) tokens.delete(token);
+    }
+  }
+  res.json({ user: getUserById(userId) });
+});
+
+app.post('/api/users/:id/reset-password', auth, (req, res) => {
+  const userId = Number(req.params.id);
+  const password = String(req.body.password || '');
+  if (password.length < 6) return res.status(400).json({ error: '密码至少需要 6 位' });
+  const target = getUserById(userId);
+  if (!target) return res.status(404).json({ error: '账号不存在' });
+  if (!requireCanManageUser(req.user, target.role, res)) return;
+  db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hashPassword(password), userId);
+  for (const [token, user] of tokens.entries()) {
+    if (user.id === userId) tokens.delete(token);
+  }
+  res.json({ ok: true });
 });
 
 app.delete('/api/users/:id', auth, (req, res) => {
   if (!isSuperAdmin(req.user) && !isProjectAdmin(req.user)) return res.status(403).json({ error: '需要管理员权限' });
   const userId = Number(req.params.id);
-  const target = db.prepare('SELECT id, username, display_name AS displayName, role, deleted_at AS deletedAt FROM users WHERE id = ?').get(userId);
+  const target = getUserById(userId);
   if (!target) return res.status(404).json({ error: '账号不存在' });
   if (target.id === req.user.id) return res.status(400).json({ error: '不能删除当前登录账号' });
   if (target.deletedAt) return res.json({ ok: true, deletedAt: target.deletedAt });
-  if (isProjectAdmin(req.user) && target.role !== ROLE_COLLECTOR) return res.status(403).json({ error: '项目管理员只能删除采集员账号' });
-  if (target.role === ROLE_SUPER_ADMIN) {
-    const activeSuperAdmins = db.prepare('SELECT COUNT(*) AS count FROM users WHERE role = ? AND deleted_at IS NULL').get(ROLE_SUPER_ADMIN).count;
-    if (activeSuperAdmins <= 1) return res.status(400).json({ error: '至少需要保留一个完全管理员账号' });
+  if (!requireCanManageUser(req.user, target.role, res)) return;
+  if (target.role === ROLE_SUPER_ADMIN && normalizeUserStatus(target.status) === STATUS_ACTIVE) {
+    if (activeSuperAdminCount() <= 1) return res.status(400).json({ error: '至少需要保留一个已启用的完全管理员账号' });
   }
   const deletedAt = new Date().toISOString();
-  db.prepare('UPDATE users SET deleted_at = ? WHERE id = ?').run(deletedAt, userId);
+  db.prepare('UPDATE users SET deleted_at = ?, status = ? WHERE id = ?').run(deletedAt, STATUS_DISABLED, userId);
   for (const [token, user] of tokens.entries()) {
     if (user.id === userId) tokens.delete(token);
   }
@@ -873,7 +1051,7 @@ app.post('/api/projects/:id/task-points/:taskPointId/approve', auth, requireProj
   const projectId = Number(req.params.id);
   const taskPointId = Number(req.params.taskPointId);
   const result = db.prepare("UPDATE task_points SET review_status = 'approved' WHERE id = ? AND project_id = ? AND is_temporary = 1").run(taskPointId, projectId);
-  if (result.changes === 0) return res.status(404).json({ error: '鐜板満琛ュ綍浠诲姟鐐逛笉瀛樺湪' });
+  if (result.changes === 0) return res.status(404).json({ error: '现场补录任务点不存在' });
   broadcast('task-point:approved', { projectId, taskPointId });
   res.json({ approved: true });
 });
@@ -950,7 +1128,7 @@ app.post('/api/photos', auth, upload.fields([{ name: 'original', maxCount: 1 }, 
   if (!project || !task || !device) return res.status(400).json({ error: '项目、任务点或设备位不匹配' });
   if (!canViewProject(req.user, projectId)) return res.status(403).json({ error: '无权向该项目上传照片' });
 
-  const photoType = String(meta.photoType || 'extra').trim() || 'extra';
+  const photoType = displayPhotoType(String(meta.photoType || 'extra').trim() || 'extra');
   const sequence = db.prepare(`SELECT COALESCE(MAX(sequence), 0) + 1 AS next FROM photo_records WHERE project_id = ? AND task_point_id = ? AND device_position_id = ? AND photo_type = ?`).get(projectId, taskPointId, devicePositionId, photoType).next || 1;
   const ext = '.jpg';
   const baseName = [sanitizeName(project.name, 36), sanitizeName(task.name, 36), sanitizeName(device.name, 42), sanitizeName(photoType, 24), padSequence(sequence)].join('-');
@@ -1016,7 +1194,7 @@ app.get('/api/projects/:id/export-check', auth, requireProjectManager, (req, res
 async function exportProjectZip({ res, projectId, taskPointId = null }) {
   const project = getProject(projectId);
   const taskPoint = taskPointId ? db.prepare('SELECT id, name FROM task_points WHERE id = ? AND project_id = ?').get(taskPointId, projectId) : null;
-  if (taskPointId && !taskPoint) return res.status(404).json({ error: '浠诲姟鐐逛笉瀛樺湪' });
+  if (taskPointId && !taskPoint) return res.status(404).json({ error: '任务点不存在' });
   const rows = listProjectPhotos(projectId, { taskPointId }).map((row) => ({
     id: row.id,
     projectName: project.name,
@@ -1025,7 +1203,7 @@ async function exportProjectZip({ res, projectId, taskPointId = null }) {
     deviceType: row.deviceType,
     fieldAdded: row.taskIsTemporary || row.deviceIsTemporary ? '是' : '否',
     reviewStatus: row.taskReviewStatus !== 'approved' || row.deviceReviewStatus !== 'approved' ? '待确认' : '已确认',
-    photoType: row.photoType,
+    photoType: displayPhotoType(row.photoType),
     sequence: row.sequence,
     fileName: row.fileName,
     watermarkedPath: row.watermarkedPath,
@@ -1213,9 +1391,12 @@ const port = Number(process.env.PORT || 3001);
 const host = process.env.HOST || '0.0.0.0';
 server.listen(port, host, () => {
   console.log(`后端服务已启动: http://${host}:${port}`);
-  console.log(`电脑访问: http://localhost:${port}`);
-  if (PUBLIC_BASE_URL) console.log(`公网访问: ${PUBLIC_BASE_URL}`);
-  for (const url of getLanAddresses(port)) console.log(`手机访问: ${url}`);
+  console.log(`本机检查: http://127.0.0.1:${port}/api/public/health`);
+  if (PUBLIC_BASE_URL) {
+    console.log(`正式公网访问: ${PUBLIC_BASE_URL}`);
+    console.log('正式部署请通过 Nginx/HTTPS 访问，不要开放公网 3001。');
+  } else {
+    for (const url of getLanAddresses(port)) console.log(`局域网后端: ${url}`);
+  }
   console.log(`数据目录: ${dataDir}`);
-  console.log('如果手机无法访问，请检查 Windows 防火墙是否允许 Node.js 专用网络访问。');
 });

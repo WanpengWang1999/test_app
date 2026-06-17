@@ -3,6 +3,7 @@ import { api, assetUrl } from '../services/api.js';
 import { addQueuedPhoto } from '../services/localDb.js';
 import { isNativeApp, readNativeOriginal, saveNativeOriginal, takeNativePhoto } from '../services/nativeApp.js';
 import { analyzeImage, getGps } from '../services/photo.js';
+import { displayPhotoType, nextRequiredPhotoTypeForDevice, normalizedDeviceType, photoTypeValue, requiredPhotoTypesForDevice } from '../services/photoTypes.js';
 import { useConfirmDialog } from './ConfirmDialog.jsx';
 
 function createClientId() {
@@ -17,14 +18,6 @@ function uploadUrl(storedPath) {
 
 function blobUrl(blob) {
   return blob ? URL.createObjectURL(blob) : '';
-}
-
-function displayPhotoType(type) {
-  return type === 'extra' ? '额外拍摄照片' : type;
-}
-
-function normalizedDeviceType(type) {
-  return type || '通用';
 }
 
 function statusClass({ missingCount, localPending, failed }) {
@@ -82,7 +75,7 @@ export default function CapturePanelV2({
 
   const [taskPointId, setTaskPointId] = useState(savedState.taskPointId || '');
   const [devicePositionId, setDevicePositionId] = useState(savedState.devicePositionId || '');
-  const [photoType, setPhotoType] = useState(savedState.photoType || '');
+  const [photoType, setPhotoType] = useState(photoTypeValue(savedState.photoType || ''));
   const [taskFilters, setTaskFilters] = useState(savedState.taskFilters || { keyword: '', onlyMissing: false });
   const [deviceFilters, setDeviceFilters] = useState(savedState.deviceFilters || { keyword: '', onlyMissing: true });
   const [showTempTaskForm, setShowTempTaskForm] = useState(false);
@@ -138,18 +131,11 @@ export default function CapturePanelV2({
   const missingTypes = requiredTypes.filter((type) => !capturedTypes.has(type));
 
   function firstPhotoTypeForDevice(device = selectedDevice) {
-    const deviceType = normalizedDeviceType(device?.deviceType);
-    const all = tree?.photoTypes || [];
-    const exact = all.filter((type) => normalizedDeviceType(type.deviceType) === deviceType);
-    const available = exact.length ? exact : all.filter((type) => normalizedDeviceType(type.deviceType) === '通用');
-    return available[0]?.name || 'extra';
+    return nextRequiredPhotoTypeForDevice({ device, photoTypes: tree?.photoTypes || [], photos, queue });
   }
 
   function requiredForDevice(device) {
-    const typeName = normalizedDeviceType(device.deviceType);
-    const exact = (tree?.photoTypes || []).filter((type) => type.required && normalizedDeviceType(type.deviceType) === typeName).map((type) => type.name);
-    const common = (tree?.photoTypes || []).filter((type) => type.required && normalizedDeviceType(type.deviceType) === '通用').map((type) => type.name);
-    return exact.length ? exact : common;
+    return requiredPhotoTypesForDevice(device, tree?.photoTypes || []);
   }
 
   function deviceMissingTypes(device) {
@@ -429,7 +415,7 @@ export default function CapturePanelV2({
   }
 
   function beginRetake(photo) {
-    setPhotoType(photo.photoType || firstPhotoTypeForDevice());
+    setPhotoType(photoTypeValue(photo.photoType) || firstPhotoTypeForDevice());
     setPhotosOpen(false);
     setPreviewPhoto(null);
     setMessage(`已删除原照片，请重新拍摄：${displayPhotoType(photo.photoType)}`);
@@ -775,6 +761,7 @@ function EmptyState({ title, text }) {
 function PhotoPreviewModal({ photo, onClose }) {
   const [mode, setMode] = useState(photo.previewMode || 'watermarked');
   const imagePath = mode === 'original' ? photo.originalPath : photo.watermarkedPath;
+  const missingText = mode === 'original' ? '这张照片没有原图路径，可能是旧数据或文件已被清理。' : '这张照片没有水印图路径，可能是旧数据或文件已被清理。';
   return (
     <div className="modal-backdrop" role="dialog" aria-modal="true" onClick={onClose}>
       <div className="photo-modal" onClick={(event) => event.stopPropagation()}>
@@ -786,11 +773,11 @@ function PhotoPreviewModal({ photo, onClose }) {
           <button type="button" className="ghost" onClick={onClose}>关闭</button>
         </div>
         <div className="inline-actions">
-          <button type="button" className={mode === 'watermarked' ? 'active' : 'ghost'} onClick={() => setMode('watermarked')}>查看水印图</button>
-          <button type="button" className={mode === 'original' ? 'active' : 'ghost'} onClick={() => setMode('original')}>查看原图</button>
+          <button type="button" className={mode === 'watermarked' ? 'active' : 'ghost'} disabled={!photo.watermarkedPath} onClick={() => setMode('watermarked')}>查看水印图</button>
+          <button type="button" className={mode === 'original' ? 'active' : 'ghost'} disabled={!photo.originalPath} onClick={() => setMode('original')}>查看原图</button>
         </div>
-        <img src={uploadUrl(imagePath)} alt={photo.fileName} />
-        <p className="hint">{mode === 'original' ? photo.originalPath : photo.watermarkedPath}</p>
+        {imagePath ? <img src={uploadUrl(imagePath)} alt={photo.fileName} /> : <div className="photo-placeholder large">{missingText}</div>}
+        <p className="hint">{imagePath || missingText}</p>
       </div>
     </div>
   );

@@ -1,5 +1,6 @@
 ﻿export const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
 export const WS_BASE_URL = (import.meta.env.VITE_WS_BASE_URL || '').replace(/\/$/, '');
+export const FIXED_CLOUD_API_BASE_URL = (import.meta.env.VITE_FIXED_API_BASE_URL || 'https://wangwanpeng.qzz.io').replace(/\/$/, '');
 const SERVER_CONFIG_KEY = 'server-config';
 
 let token = '';
@@ -14,6 +15,10 @@ export function getApiBaseUrl() {
 }
 
 export function setApiBaseUrl(nextUrl) {
+  if (isNativeRuntime() && !import.meta.env.DEV) {
+    runtimeApiBaseUrl = FIXED_CLOUD_API_BASE_URL;
+    return;
+  }
   runtimeApiBaseUrl = normalizeBaseUrl(nextUrl);
   if (runtimeApiBaseUrl) {
     localStorage.setItem(SERVER_CONFIG_KEY, JSON.stringify({ apiBaseUrl: runtimeApiBaseUrl }));
@@ -64,12 +69,17 @@ function normalizeBaseUrl(value) {
 }
 
 function readSavedApiBaseUrl() {
+  if (isNativeRuntime() && !import.meta.env.DEV) return FIXED_CLOUD_API_BASE_URL;
   try {
     const saved = JSON.parse(localStorage.getItem(SERVER_CONFIG_KEY) || '{}');
     return normalizeBaseUrl(saved.apiBaseUrl);
   } catch {
     return '';
   }
+}
+
+function isNativeRuntime() {
+  return Boolean(window.Capacitor?.isNativePlatform?.());
 }
 
 export async function api(path, options = {}) {

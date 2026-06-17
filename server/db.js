@@ -19,6 +19,10 @@ db.exec('PRAGMA foreign_keys = ON');
 export const ROLE_SUPER_ADMIN = 'super_admin';
 export const ROLE_PROJECT_ADMIN = 'project_admin';
 export const ROLE_COLLECTOR = 'collector';
+export const STATUS_PENDING = 'pending';
+export const STATUS_ACTIVE = 'active';
+export const STATUS_REJECTED = 'rejected';
+export const STATUS_DISABLED = 'disabled';
 
 export function hashPassword(password) {
   return crypto.createHash('sha256').update(String(password)).digest('hex');
@@ -57,15 +61,25 @@ function migrateUsers() {
     CREATE TABLE users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       username TEXT NOT NULL UNIQUE,
+      phone TEXT,
       password_hash TEXT NOT NULL,
       display_name TEXT NOT NULL,
+      company TEXT,
       role TEXT NOT NULL CHECK(role IN ('super_admin', 'project_admin', 'collector')),
+      status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('pending', 'active', 'rejected', 'disabled')),
+      approved_by INTEGER,
+      approved_at TEXT,
+      rejected_by INTEGER,
+      rejected_at TEXT,
       deleted_at TEXT,
-      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(approved_by) REFERENCES users(id),
+      FOREIGN KEY(rejected_by) REFERENCES users(id)
     );
-    INSERT INTO users (id, username, password_hash, display_name, role, deleted_at, created_at)
-      SELECT id, username, password_hash, display_name,
+    INSERT INTO users (id, username, phone, password_hash, display_name, company, role, status, deleted_at, created_at)
+      SELECT id, username, NULL, password_hash, display_name, '',
         CASE WHEN role = 'admin' THEN 'super_admin' ELSE role END,
+        'active',
         NULL,
         created_at
       FROM users_legacy;
@@ -169,6 +183,13 @@ function migratePhotoTypes() {
 function ensureExtraColumns() {
   addColumn('projects', 'archived_at', 'TEXT');
   addColumn('projects', 'archived_by', 'INTEGER');
+  addColumn('users', 'phone', 'TEXT');
+  addColumn('users', 'company', "TEXT NOT NULL DEFAULT ''");
+  addColumn('users', 'status', "TEXT NOT NULL DEFAULT 'active'");
+  addColumn('users', 'approved_by', 'INTEGER');
+  addColumn('users', 'approved_at', 'TEXT');
+  addColumn('users', 'rejected_by', 'INTEGER');
+  addColumn('users', 'rejected_at', 'TEXT');
   addColumn('users', 'deleted_at', 'TEXT');
   addColumn('task_points', 'is_temporary', 'INTEGER NOT NULL DEFAULT 0');
   addColumn('task_points', 'review_status', "TEXT NOT NULL DEFAULT 'approved'");
@@ -190,6 +211,7 @@ function ensureIndexes() {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_device_type_templates_scope ON device_type_templates(device_type, name);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_project_members_scope ON project_members(project_id, user_id);
     CREATE INDEX IF NOT EXISTS idx_photo_records_active ON photo_records(project_id, deleted_at);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_users_phone_unique ON users(phone) WHERE phone IS NOT NULL AND phone <> '';
   `);
 }
 
@@ -215,27 +237,55 @@ function seedTemplates() {
   ].forEach(([deviceType, name, required], index) => insert.run(deviceType, name, required, index));
 }
 
-function seedDefaultUsers() {
+function seedFormalAdmin() {
+  const phone = process.env.INITIAL_ADMIN_PHONE || '19720410920';
+  const password = process.env.INITIAL_ADMIN_PASSWORD || 'WWP1999';
+  const displayName = process.env.INITIAL_ADMIN_NAME || '正式管理员';
+  const company = process.env.INITIAL_ADMIN_COMPANY || '';
+  const existing = db.prepare('SELECT id FROM users WHERE phone = ? OR username = ? ORDER BY id LIMIT 1').get(phone, phone);
+  if (existing) {
+    db.prepare(`UPDATE users
+      SET phone = ?, display_name = COALESCE(NULLIF(display_name, ''), ?), company = COALESCE(company, ?),
+        role = ?, status = ?, deleted_at = NULL
+      WHERE id = ?`).run(phone, displayName, company, ROLE_SUPER_ADMIN, STATUS_ACTIVE, existing.id);
+    return;
+  }
+  db.prepare(`INSERT INTO users (username, phone, password_hash, display_name, company, role, status, approved_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(phone, phone, hashPassword(password), displayName, company, ROLE_SUPER_ADMIN, STATUS_ACTIVE, new Date().toISOString());
+}
+
+function seedDemoUsers() {
+  if (process.env.ENABLE_DEMO_USERS !== '1') return;
   const insert = db.prepare(
-    'INSERT OR IGNORE INTO users (username, password_hash, display_name, role) VALUES (?, ?, ?, ?)'
+    'INSERT OR IGNORE INTO users (username, password_hash, display_name, company, role, status) VALUES (?, ?, ?, ?, ?, ?)'
   );
-  insert.run('admin', hashPassword('admin123'), '完全管理员', ROLE_SUPER_ADMIN);
-  insert.run('projectadmin', hashPassword('project123'), '项目管理员', ROLE_PROJECT_ADMIN);
-  insert.run('collector', hashPassword('collector123'), '采集员', ROLE_COLLECTOR);
-  db.prepare("UPDATE users SET display_name = '完全管理员', role = ? WHERE username = 'admin'").run(ROLE_SUPER_ADMIN);
-  db.prepare("UPDATE users SET display_name = '项目管理员', role = ? WHERE username = 'projectadmin'").run(ROLE_PROJECT_ADMIN);
-  db.prepare("UPDATE users SET display_name = '采集员', role = ? WHERE username = 'collector'").run(ROLE_COLLECTOR);
+  insert.run('admin', hashPassword('admin123'), '完全管理员', '', ROLE_SUPER_ADMIN, STATUS_ACTIVE);
+  insert.run('projectadmin', hashPassword('project123'), '项目管理员', '', ROLE_PROJECT_ADMIN, STATUS_ACTIVE);
+  insert.run('collector', hashPassword('collector123'), '采集员', '', ROLE_COLLECTOR, STATUS_ACTIVE);
+  db.prepare("UPDATE users SET display_name = '完全管理员', role = ?, status = ? WHERE username = 'admin'").run(ROLE_SUPER_ADMIN, STATUS_ACTIVE);
+  db.prepare("UPDATE users SET display_name = '项目管理员', role = ?, status = ? WHERE username = 'projectadmin'").run(ROLE_PROJECT_ADMIN, STATUS_ACTIVE);
+  db.prepare("UPDATE users SET display_name = '采集员', role = ?, status = ? WHERE username = 'collector'").run(ROLE_COLLECTOR, STATUS_ACTIVE);
 }
 export function initDb() {
   db.exec(`
     CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       username TEXT NOT NULL UNIQUE,
+      phone TEXT,
       password_hash TEXT NOT NULL,
       display_name TEXT NOT NULL,
+      company TEXT NOT NULL DEFAULT '',
       role TEXT NOT NULL CHECK(role IN ('super_admin', 'project_admin', 'collector')),
+      status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('pending', 'active', 'rejected', 'disabled')),
+      approved_by INTEGER,
+      approved_at TEXT,
+      rejected_by INTEGER,
+      rejected_at TEXT,
       deleted_at TEXT,
-      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(approved_by) REFERENCES users(id),
+      FOREIGN KEY(rejected_by) REFERENCES users(id)
     );
 
     CREATE TABLE IF NOT EXISTS projects (
@@ -342,7 +392,8 @@ export function initDb() {
   migratePhotoTypes();
   ensureExtraColumns();
   ensureIndexes();
-  seedDefaultUsers();
+  seedFormalAdmin();
+  seedDemoUsers();
   seedTemplates();
 }
 
@@ -350,8 +401,15 @@ export function rowToUser(row) {
   return {
     id: row.id,
     username: row.username,
+    phone: row.phone,
     displayName: row.display_name,
+    company: row.company,
     role: row.role,
+    status: row.status || STATUS_ACTIVE,
+    approvedBy: row.approved_by,
+    approvedAt: row.approved_at,
+    rejectedBy: row.rejected_by,
+    rejectedAt: row.rejected_at,
     deletedAt: row.deleted_at,
     createdAt: row.created_at
   };

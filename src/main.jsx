@@ -1,15 +1,16 @@
 ﻿import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import './styles.css';
-import { api, apiUrl, assetUrl, getApiBaseUrl, getSavedServerConfig, setApiBaseUrl, setAuthToken, wsUrl } from './services/api.js';
+import { FIXED_CLOUD_API_BASE_URL, api, apiUrl, assetUrl, getApiBaseUrl, getSavedServerConfig, setApiBaseUrl, setAuthToken, wsUrl } from './services/api.js';
 import { getCachedProjects, getCachedTree, getQueuedPhotos, putCachedProjects, putCachedTree, removeQueuedPhoto, updateQueuedPhoto } from './services/localDb.js';
 import { exitNativeApp, isNativeApp, isNativeOnline, onNativeAppForeground, onNativeBackButton, onNativeNetworkRestored, readNativeOriginal, removeNativeOriginal } from './services/nativeApp.js';
 import { fileToWatermarkedBlob } from './services/photo.js';
 import CapturePanelV2 from './components/CapturePanelV2.jsx';
 import { useConfirmDialog } from './components/ConfirmDialog.jsx';
 
-const DEFAULT_LOGIN = { username: 'admin', password: 'admin123' };
+const DEFAULT_LOGIN = { phone: '', password: '' };
 const ROLE_LABELS = { super_admin: '完全管理员', project_admin: '项目管理员', collector: '采集员' };
+const STATUS_LABELS = { pending: '待审批', active: '已启用', rejected: '已拒绝', disabled: '已停用' };
 const VIEW_LABELS = { projects: '项目', capture: '采集', sync: '同步', progress: '进度', manage: '管理', upload: '导入', export: '导出', accounts: '账号', health: '健康', diagnostics: '诊断', more: '更多' };
 
 function uploadUrl(storedPath) {
@@ -22,7 +23,7 @@ function blobUrl(blob) {
 }
 
 function displayPhotoType(type) {
-  return type === 'extra' ? '额外拍摄照片' : type;
+  return type === 'extra' || type === '额外拍摄照片' ? '额外拍摄照片' : type;
 }
 
 function roleAllowedViews(role) {
@@ -38,8 +39,12 @@ function diagnoseSyncError(error) {
   if (/403|权限/i.test(message)) return '当前账号没有该项目或照片的上传权限。';
   if (/413|file too large|文件过大|too large/i.test(message)) return '照片文件过大，请删除本地队列照片后重新拍摄。';
   if (/水印|canvas|timeout|超时/i.test(message)) return '生成水印或上传超时，请在同步中心单张重试。';
-  if (/failed to fetch|network|load failed/i.test(message)) return '无法连接后端服务，请检查电脑服务、局域网和防火墙。';
+  if (/failed to fetch|network|load failed/i.test(message)) return '无法连接后端服务，请检查服务器、网络和防火墙。';
   return message || '同步失败，请稍后重试。';
+}
+
+function isAuthError(error) {
+  return /401|403|未登录|登录已过期|账号待管理员审批|账号已停用|账号注册申请已被拒绝/i.test(String(error?.message || error || ''));
 }
 
 function withTimeout(promise, ms, message) {
@@ -107,6 +112,25 @@ function readCaptureState(projectId, userId) {
   }
 }
 
+function accountStorageKey(base, userId) {
+  return userId ? `${base}:${userId}` : `${base}:anonymous`;
+}
+
+function readAccountStorage(base, userId, fallback = '') {
+  try {
+    return localStorage.getItem(accountStorageKey(base, userId)) ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function writeAccountStorage(base, userId, value) {
+  if (!userId) return;
+  const key = accountStorageKey(base, userId);
+  if (value) localStorage.setItem(key, String(value));
+  else localStorage.removeItem(key);
+}
+
 function formatBytes(value = 0) {
   if (value > 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)} MB`;
   return `${Math.round(value / 1024)} KB`;
@@ -118,7 +142,7 @@ function App() {
     return saved ? JSON.parse(saved) : null;
   });
   const [projects, setProjects] = useState([]);
-  const [activeProjectId, setActiveProjectId] = useState(() => localStorage.getItem('last-active-project-id') || '');
+  const [activeProjectId, setActiveProjectId] = useState(() => readAccountStorage('last-active-project-id', session?.user?.id));
   const [activeView, setActiveView] = useState('projects');
   const [manageProjectId, setManageProjectId] = useState('');
   const [capturePage, setCapturePage] = useState('projectList');
@@ -129,7 +153,7 @@ function App() {
   const [queue, setQueue] = useState([]);
   const [syncingIds, setSyncingIds] = useState([]);
   const [uploadProgress, setUploadProgress] = useState(null);
-  const [syncPaused, setSyncPaused] = useState(() => localStorage.getItem('sync-paused') === '1');
+  const [syncPaused, setSyncPaused] = useState(() => readAccountStorage('sync-paused', session?.user?.id) === '1');
   const [installPrompt, setInstallPrompt] = useState(null);
   const [showInstallTip, setShowInstallTip] = useState(() => localStorage.getItem('pwa-install-tip-hidden') !== '1');
   const [notice, setNotice] = useState('');
@@ -145,6 +169,19 @@ function App() {
   useEffect(() => {
     if (session?.token) setAuthToken(session.token);
   }, [session]);
+
+  useEffect(() => {
+    if (!session?.user?.id) {
+      setActiveProjectId('');
+      setManageProjectId('');
+      setSyncPaused(false);
+      return;
+    }
+    setActiveProjectId(readAccountStorage('last-active-project-id', session.user.id));
+    setManageProjectId('');
+    setSyncPaused(readAccountStorage('sync-paused', session.user.id) === '1');
+    setCapturePage('projectList');
+  }, [session?.user?.id]);
 
   useEffect(() => {
     if (!session) return;
@@ -203,8 +240,9 @@ function App() {
   }, [session, activeProjectId, syncPaused]);
 
   useEffect(() => {
-    if (activeProjectId) localStorage.setItem('last-active-project-id', activeProjectId);
-  }, [activeProjectId]);
+    if (!session?.user?.id) return;
+    writeAccountStorage('last-active-project-id', session.user.id, activeProjectId);
+  }, [activeProjectId, session?.user?.id]);
 
   useEffect(() => {
     if (!allowedViews.includes(activeView)) setActiveView('projects');
@@ -231,12 +269,18 @@ function App() {
       const data = await api('/api/projects');
       setProjects(data.projects);
       await putCachedProjects(data.projects);
-      if (activeProjectId && !data.projects.some((project) => String(project.id) === String(activeProjectId)) && data.projects[0]) setActiveProjectId(String(data.projects[0].id));
-      if (!activeProjectId && data.projects[0]) setActiveProjectId(String(data.projects[0].id));
-    } catch {
+      setActiveProjectId((currentId) => {
+        if (currentId && data.projects.some((project) => String(project.id) === String(currentId))) return currentId;
+        return data.projects[0] ? String(data.projects[0].id) : '';
+      });
+    } catch (err) {
+      if (isAuthError(err)) {
+        logout();
+        return;
+      }
       const cached = await getCachedProjects();
       setProjects(cached);
-      if (!activeProjectId && cached[0]) setActiveProjectId(String(cached[0].id));
+      setActiveProjectId((currentId) => currentId || (cached[0] ? String(cached[0].id) : ''));
       setNotice('当前离线，使用本地缓存继续采集。');
     }
   }
@@ -315,6 +359,11 @@ function App() {
     if (activeProjectId) await loadProject(activeProjectId);
   }
 
+  function handleSyncPausedChange(next) {
+    setSyncPaused(next);
+    writeAccountStorage('sync-paused', session?.user?.id, next ? '1' : '');
+  }
+
   async function installPwa() {
     if (!installPrompt) return;
     await installPrompt.prompt();
@@ -324,7 +373,9 @@ function App() {
   }
 
   function enterProject(projectId, view = 'capture') {
-    setActiveProjectId(String(projectId));
+    const nextProjectId = String(projectId);
+    writeAccountStorage('last-active-project-id', session?.user?.id, nextProjectId);
+    setActiveProjectId(nextProjectId);
     setManageProjectId(view === 'manage' ? String(projectId) : '');
     setActiveView(view);
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -403,7 +454,7 @@ function App() {
         <section className="panel feature-panel">
           {activeView === 'projects' && <ProjectHome projects={projects} activeProjectId={activeProjectId} progress={progress} queue={queue} session={session} canManageProjects={canManageProjects} enterProject={enterProject} />}
           {activeView === 'capture' && <CapturePanelV2 tree={tree} session={session} projectId={activeProjectId} photos={photos} queue={queue} reload={() => activeProjectId && loadProject(activeProjectId)} onQueued={async () => { await refreshQueue(); await syncQueue(); }} onPageChange={setCapturePage} onExitProject={leaveProject} backSignal={captureBackSignal} />}
-          {activeView === 'sync' && <SyncCenter queue={queue} photos={photos} tree={tree} syncingIds={syncingIds} refreshQueue={refreshQueue} retry={(ids) => syncQueue(ids)} syncPaused={syncPaused} setSyncPaused={setSyncPaused} confirm={confirm} />}
+          {activeView === 'sync' && <SyncCenter queue={queue} photos={photos} tree={tree} syncingIds={syncingIds} refreshQueue={refreshQueue} retry={(ids) => syncQueue(ids)} syncPaused={syncPaused} setSyncPaused={handleSyncPausedChange} confirm={confirm} />}
           {activeView === 'progress' && <ProgressPanel progress={progress} queue={queue} projectId={activeProjectId} photos={photos} session={session} reload={() => activeProjectId && loadProject(activeProjectId)} confirm={confirm} />}
           {activeView === 'manage' && canManageProjects && <ProjectManagePanel projects={projects} activeProjectId={activeProjectId} manageProjectId={manageProjectId} clearManageProjectId={() => setManageProjectId('')} setActiveProjectId={setActiveProjectId} setActiveView={setActiveView} refreshProjects={refreshProjects} loadProject={loadProject} isSuperAdmin={isSuperAdmin} confirm={confirm} />}
           {activeView === 'upload' && canManageProjects && <UploadPanel activeProjectId={activeProjectId} setActiveProjectId={setActiveProjectId} refreshProjects={refreshProjects} tree={tree} reload={() => activeProjectId && loadProject(activeProjectId)} isSuperAdmin={isSuperAdmin} token={session.token} confirm={confirm} />}
@@ -424,14 +475,18 @@ function App() {
 
 function Login({ onLogin }) {
   const [form, setForm] = useState(DEFAULT_LOGIN);
+  const [registerForm, setRegisterForm] = useState({ phone: '', displayName: '', company: '', password: '' });
+  const [mode, setMode] = useState('login');
   const [serverUrl, setServerUrl] = useState(() => getSavedServerConfig().apiBaseUrl || getApiBaseUrl());
-  const [showServerConfig, setShowServerConfig] = useState(() => isNativeApp() || !getApiBaseUrl());
+  const [showServerConfig, setShowServerConfig] = useState(false);
   const [serverMessage, setServerMessage] = useState('');
   const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
+  const showServerTools = import.meta.env.DEV;
   function saveServerUrl() {
     const clean = serverUrl.trim();
-    if (isNativeApp() && !clean) {
-      setServerMessage('Android App 需要填写服务器地址。云端测试请填写 https://你的域名；局域网测试可填写 http://电脑IP:3001。');
+    if (isNativeApp() && !import.meta.env.DEV) {
+      setServerMessage(`Android App 固定连接：${FIXED_CLOUD_API_BASE_URL}`);
       return false;
     }
     if (clean && !/^https?:\/\//i.test(clean)) {
@@ -456,28 +511,44 @@ function Login({ onLogin }) {
   async function submit(event) {
     event.preventDefault();
     setError('');
-    if (!saveServerUrl()) return;
+    setMessage('');
+    if (showServerTools && !saveServerUrl()) return;
     try {
       onLogin(await api('/api/auth/login', { method: 'POST', body: JSON.stringify(form) }));
     } catch (err) {
       setError(err.message);
     }
   }
+  async function register(event) {
+    event.preventDefault();
+    setError('');
+    setMessage('');
+    if (showServerTools && !saveServerUrl()) return;
+    try {
+      await api('/api/auth/register', { method: 'POST', body: JSON.stringify(registerForm) });
+      setMessage('注册申请已提交，请等待管理员审批后再登录。');
+      setForm({ phone: registerForm.phone, password: '' });
+      setRegisterForm({ phone: '', displayName: '', company: '', password: '' });
+      setMode('login');
+    } catch (err) {
+      setError(err.message);
+    }
+  }
   return (
     <main className="login">
-      <form onSubmit={submit} className="login-form">
+      <form onSubmit={mode === 'login' ? submit : register} className="login-form">
         <h1>通信工程照片采集</h1>
-        <section className="server-config">
+        {showServerTools && <section className="server-config">
           <div className="section-head">
             <div>
               <strong>服务器地址</strong>
-              <p className="hint">{isNativeApp() ? 'Android App 云端测试填写 https://你的域名。' : '网页端部署到云端后可留空，自动使用当前域名。'}</p>
+              <p className="hint">开发调试可临时修改。正式 App 固定连接 {FIXED_CLOUD_API_BASE_URL}。</p>
             </div>
             <button type="button" className="ghost" onClick={() => setShowServerConfig(!showServerConfig)}>{showServerConfig ? '收起' : '设置'}</button>
           </div>
           {showServerConfig && (
             <div className="server-config-body">
-              <input placeholder={isNativeApp() ? '例如：https://photo.example.com' : '留空使用当前网页域名'} value={serverUrl} onChange={(event) => setServerUrl(event.target.value)} />
+              <input placeholder={isNativeApp() ? `例如：${FIXED_CLOUD_API_BASE_URL}` : '留空使用当前网页域名'} value={serverUrl} onChange={(event) => setServerUrl(event.target.value)} />
               <div className="inline-actions">
                 <button type="button" className="ghost" onClick={saveServerUrl}>保存地址</button>
                 <button type="button" className="ghost" onClick={testServer}>测试连接</button>
@@ -485,12 +556,28 @@ function Login({ onLogin }) {
               {serverMessage && <p className="hint">{serverMessage}</p>}
             </div>
           )}
-        </section>
-        <label>用户名<input value={form.username} onChange={(event) => setForm({ ...form, username: event.target.value })} /></label>
-        <label>密码<input type="password" value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} /></label>
+        </section>}
+        {!showServerTools && <p className="hint">服务器：{isNativeApp() ? FIXED_CLOUD_API_BASE_URL : '当前网站域名'}</p>}
+        <div className="segmented">
+          <button type="button" className={mode === 'login' ? 'active' : ''} onClick={() => setMode('login')}>登录</button>
+          <button type="button" className={mode === 'register' ? 'active' : ''} onClick={() => setMode('register')}>注册账号</button>
+        </div>
+        {mode === 'login' ? (
+          <>
+            <label>手机号<input inputMode="tel" autoComplete="username" value={form.phone} onChange={(event) => setForm({ ...form, phone: event.target.value })} /></label>
+            <label>密码<input type="password" autoComplete="current-password" value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} /></label>
+          </>
+        ) : (
+          <>
+            <label>手机号<input inputMode="tel" autoComplete="tel" value={registerForm.phone} onChange={(event) => setRegisterForm({ ...registerForm, phone: event.target.value })} /></label>
+            <label>姓名<input autoComplete="name" value={registerForm.displayName} onChange={(event) => setRegisterForm({ ...registerForm, displayName: event.target.value })} /></label>
+            <label>工作单位<input value={registerForm.company} onChange={(event) => setRegisterForm({ ...registerForm, company: event.target.value })} /></label>
+            <label>密码<input type="password" autoComplete="new-password" value={registerForm.password} onChange={(event) => setRegisterForm({ ...registerForm, password: event.target.value })} /></label>
+          </>
+        )}
         {error && <p className="error">{error}</p>}
-        <button type="submit">登录</button>
-        <p className="hint">演示账号：admin/admin123，projectadmin/project123，collector/collector123</p>
+        {message && <p className="hint">{message}</p>}
+        <button type="submit">{mode === 'login' ? '登录' : '提交注册申请'}</button>
       </form>
     </main>
   );
@@ -599,9 +686,9 @@ function MorePanel({ canManageProjects, isSuperAdmin, token, setActiveView, logo
         {canManageProjects && <button type="button" className="menu-card" onClick={() => setActiveView('manage')}><strong>项目管理</strong><span>新建、改名和维护项目</span></button>}
         {canManageProjects && <button type="button" className="menu-card" onClick={() => setActiveView('upload')}><strong>导入 Excel</strong><span>上传设备位清单和模板</span></button>}
         {canManageProjects && <button type="button" className="menu-card" onClick={() => setActiveView('export')}><strong>导出成果</strong><span>导出照片、清单和 ZIP</span></button>}
-        {canManageProjects && <button type="button" className="menu-card" onClick={() => setActiveView('accounts')}><strong>账号管理</strong><span>创建、查看和删除账号</span></button>}
+        {canManageProjects && <button type="button" className="menu-card" onClick={() => setActiveView('accounts')}><strong>账号管理</strong><span>审批、创建、编辑和停用账号</span></button>}
         {isSuperAdmin && <button type="button" className="menu-card" onClick={() => setActiveView('health')}><strong>健康与备份</strong><span>查看后端状态和备份</span></button>}
-        <a className="menu-card" href={apkUrl}><strong>下载 APK</strong><span>局域网内部测试安装包</span></a>
+        <a className="menu-card" href={apkUrl}><strong>下载 APK</strong><span>云端正式测试安装包</span></a>
       </div>
       <button type="button" className="ghost danger" onClick={logout}>退出登录</button>
     </div>
@@ -644,6 +731,7 @@ function SyncCenter({ queue, photos, tree, syncingIds, refreshQueue, retry, sync
   const [selectedProjectId, setSelectedProjectId] = useState('');
   const [selectedTaskId, setSelectedTaskId] = useState('');
   const [keyword, setKeyword] = useState('');
+  const [previewPhoto, setPreviewPhoto] = useState(null);
   const localBytes = queue.reduce((sum, item) => sum + (item.originalBlob?.size || item.originalSize || 0) + (item.watermarkedBlob?.size || 0), 0);
   const localSizeText = localBytes > 1024 * 1024 ? `${(localBytes / 1024 / 1024).toFixed(1)} MB` : `${Math.round(localBytes / 1024)} KB`;
   const projects = useMemo(() => {
@@ -708,7 +796,6 @@ function SyncCenter({ queue, photos, tree, syncingIds, refreshQueue, retry, sync
   function togglePause() {
     const next = !syncPaused;
     setSyncPaused(next);
-    localStorage.setItem('sync-paused', next ? '1' : '0');
   }
 
   if (!selectedProject) {
@@ -757,7 +844,8 @@ function SyncCenter({ queue, photos, tree, syncingIds, refreshQueue, retry, sync
       <div className="section-head"><h3>本地待同步照片</h3><button type="button" className="ghost" onClick={() => retry(selectedLocal.map((item) => item.id))} disabled={selectedLocal.length === 0}>重试本任务点</button></div>
       {selectedLocal.length === 0 ? <p className="hint">这个任务点没有本地待同步照片。</p> : <div className="queue-cards">{selectedLocal.map((item) => <article key={item.id} className="queue-card"><LocalPhotoImage item={item} alt="待同步照片" /><div><strong>{item.metadata?.devicePositionName || '未命名设备'}</strong><p>{item.metadata?.deviceType} · {displayPhotoType(item.metadata?.photoType)}</p><small>{new Date(item.metadata?.capturedAt || Date.now()).toLocaleString()}</small><small>状态：{syncingIds.includes(item.id) ? '同步中' : item.status === 'failed' ? '失败' : '待同步'}</small>{item.lastError && <small className="error">{item.lastError}</small>}</div><div className="queue-actions"><button type="button" className="ghost" onClick={() => retry([item.id])}>重试</button><button type="button" className="ghost danger" onClick={() => removeLocal(item.id)}>删除本地</button></div></article>)}</div>}
       <h3>已同步照片</h3>
-      {selectedSynced.length === 0 ? <p className="hint">这个任务点还没有已同步照片。</p> : <div className="photo-grid compact">{selectedSynced.map((photo) => <div key={photo.id} className="photo-card"><img src={uploadUrl(photo.watermarkedPath)} alt={photo.fileName} /><strong>{photo.devicePositionName}</strong><span>{photo.deviceType} · {displayPhotoType(photo.photoType)}</span><small>{photo.fileName}</small></div>)}</div>}
+      {selectedSynced.length === 0 ? <p className="hint">这个任务点还没有已同步照片。</p> : <div className="photo-grid compact">{selectedSynced.map((photo) => <div key={photo.id} className="photo-card"><button type="button" className="image-button" onClick={() => setPreviewPhoto(photo)}><img src={uploadUrl(photo.watermarkedPath)} alt={photo.fileName} /></button><strong>{photo.devicePositionName}</strong><span>{photo.deviceType} · {displayPhotoType(photo.photoType)}</span><small>{photo.fileName}</small><div className="photo-path-actions"><button type="button" className="ghost tiny" onClick={() => setPreviewPhoto({ ...photo, previewMode: 'watermarked' })}>水印图</button><button type="button" className="ghost tiny" onClick={() => setPreviewPhoto({ ...photo, previewMode: 'original' })}>原图</button></div></div>)}</div>}
+      {previewPhoto && <PhotoPreviewModal photo={previewPhoto} onClose={() => setPreviewPhoto(null)} />}
     </div>
   );
 }
@@ -770,7 +858,7 @@ function groupSyncFailures(queue) {
     let advice = '查看失败详情，重试仍失败时请联系管理员。';
     if (/fetch|network|failed to fetch|连接|timeout|econn|离线/i.test(error)) {
       key = '服务器连接失败';
-      advice = '检查手机网络、服务器地址、电脑后端服务和 Windows 防火墙。';
+      advice = '检查手机网络、正式域名、云端后端服务和服务器防火墙。';
     } else if (/file|blob|not found|读取|私有目录|missing/i.test(error)) {
       key = '本地照片文件异常';
       advice = '照片原图可能被清理，建议删除本地队列后重拍。';
@@ -805,6 +893,7 @@ function FailureSummary({ groups }) {
 function PhotoPreviewModal({ photo, onClose }) {
   const [mode, setMode] = useState(photo.previewMode || 'watermarked');
   const imagePath = mode === 'original' ? photo.originalPath : photo.watermarkedPath;
+  const missingText = mode === 'original' ? '这张照片没有原图路径，可能是旧数据或文件已被清理。' : '这张照片没有水印图路径，可能是旧数据或文件已被清理。';
   return (
     <div className="modal-backdrop" role="dialog" aria-modal="true" onClick={onClose}>
       <div className="photo-modal" onClick={(event) => event.stopPropagation()}>
@@ -816,11 +905,11 @@ function PhotoPreviewModal({ photo, onClose }) {
           <button type="button" className="ghost" onClick={onClose}>关闭</button>
         </div>
         <div className="inline-actions">
-          <button type="button" className={mode === 'watermarked' ? 'active' : 'ghost'} onClick={() => setMode('watermarked')}>查看水印图</button>
-          <button type="button" className={mode === 'original' ? 'active' : 'ghost'} onClick={() => setMode('original')}>查看原图</button>
+          <button type="button" className={mode === 'watermarked' ? 'active' : 'ghost'} disabled={!photo.watermarkedPath} onClick={() => setMode('watermarked')}>查看水印图</button>
+          <button type="button" className={mode === 'original' ? 'active' : 'ghost'} disabled={!photo.originalPath} onClick={() => setMode('original')}>查看原图</button>
         </div>
-        <img src={uploadUrl(imagePath)} alt={photo.fileName} />
-        <p className="hint">{imagePath}</p>
+        {imagePath ? <img src={uploadUrl(imagePath)} alt={photo.fileName} /> : <div className="photo-placeholder large">{missingText}</div>}
+        <p className="hint">{imagePath || missingText}</p>
       </div>
     </div>
   );
@@ -1265,33 +1354,88 @@ function RecycleBin({ projectId, recycle, reload, confirm }) {
 
 function AccountPanel({ session, isSuperAdmin, confirm }) {
   const [users, setUsers] = useState([]);
-  const [form, setForm] = useState({ username: '', password: '', displayName: '', role: 'collector' });
+  const [form, setForm] = useState({ phone: '', password: '', displayName: '', company: '', role: 'collector' });
+  const [editingId, setEditingId] = useState('');
+  const [editForm, setEditForm] = useState(null);
+  const [resetId, setResetId] = useState('');
+  const [resetPassword, setResetPassword] = useState('');
   const [keyword, setKeyword] = useState('');
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const roleOptions = isSuperAdmin ? [['super_admin', '完全管理员'], ['project_admin', '项目管理员'], ['collector', '采集员']] : [['collector', '采集员']];
-  const filteredUsers = users.filter((user) => `${user.displayName} ${user.username} ${ROLE_LABELS[user.role] || user.role}`.toLowerCase().includes(keyword.trim().toLowerCase()));
+  const filteredUsers = users.filter((user) => `${user.displayName} ${user.phone || ''} ${user.username} ${user.company || ''} ${ROLE_LABELS[user.role] || user.role} ${STATUS_LABELS[user.status] || user.status}`.toLowerCase().includes(keyword.trim().toLowerCase()));
+  const pendingUsers = filteredUsers.filter((user) => user.status === 'pending' && canManageUser(user));
+  const activeUsers = filteredUsers.filter((user) => user.status === 'active' && !user.deletedAt);
+  const inactiveUsers = filteredUsers.filter((user) => (user.status !== 'active' && user.status !== 'pending') || user.deletedAt);
   async function loadUsers() { const data = await api('/api/users'); setUsers(data.users); }
   useEffect(() => { loadUsers().catch((err) => setError(err.message)); }, []);
+  function canManageUser(user) {
+    if (user.id === session.user.id) return isSuperAdmin;
+    if (isSuperAdmin) return true;
+    return user.role === 'collector';
+  }
   async function createUser(event) {
     event.preventDefault();
     setMessage('');
     setError('');
     try {
       await api('/api/users', { method: 'POST', body: JSON.stringify(form) });
-      setMessage(`已创建账号：${form.username}`);
-      setForm({ username: '', password: '', displayName: '', role: 'collector' });
+      setMessage(`已创建账号：${form.phone}`);
+      setForm({ phone: '', password: '', displayName: '', company: '', role: 'collector' });
       await loadUsers();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+  function beginEdit(user) {
+    setEditingId(user.id);
+    setEditForm({ phone: user.phone || user.username || '', displayName: user.displayName || '', company: user.company || '', role: user.role });
+    setResetId('');
+  }
+  async function saveEdit(event) {
+    event.preventDefault();
+    setMessage('');
+    setError('');
+    try {
+      await api(`/api/users/${editingId}`, { method: 'PATCH', body: JSON.stringify(editForm) });
+      setMessage('账号资料已保存。');
+      setEditingId('');
+      setEditForm(null);
+      await loadUsers();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+  async function changeStatus(user, status) {
+    setMessage('');
+    setError('');
+    try {
+      await api(`/api/users/${user.id}/status`, { method: 'PATCH', body: JSON.stringify({ status }) });
+      setMessage(`${user.displayName} 已${STATUS_LABELS[status] || status}。`);
+      await loadUsers();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+  async function resetUserPassword(event) {
+    event.preventDefault();
+    setMessage('');
+    setError('');
+    try {
+      await api(`/api/users/${resetId}/reset-password`, { method: 'POST', body: JSON.stringify({ password: resetPassword }) });
+      setMessage('密码已重置，该账号需要重新登录。');
+      setResetId('');
+      setResetPassword('');
     } catch (err) {
       setError(err.message);
     }
   }
   async function deleteUser(user) {
     const ok = await confirm({
-      title: '删除账号',
-      message: '删除后该账号不能再登录，历史项目和照片记录会保留。',
-      details: [`账号：${user.username}`, `姓名：${user.displayName}`, `角色：${ROLE_LABELS[user.role] || user.role}`],
-      confirmText: '删除账号',
+      title: '停用账号',
+      message: '停用后该账号不能再登录，历史项目和照片记录会保留。',
+      details: [`手机号：${user.phone || user.username}`, `姓名：${user.displayName}`, `角色：${ROLE_LABELS[user.role] || user.role}`],
+      confirmText: '停用账号',
       danger: true
     });
     if (!ok) return;
@@ -1299,30 +1443,55 @@ function AccountPanel({ session, isSuperAdmin, confirm }) {
     setError('');
     try {
       await api(`/api/users/${user.id}`, { method: 'DELETE' });
-      setMessage(`已删除账号：${user.username}`);
+      setMessage(`已停用账号：${user.phone || user.username}`);
       await loadUsers();
     } catch (err) {
       setError(err.message);
     }
   }
   function canDeleteUser(user) {
-    if (user.deletedAt || user.id === session.user.id) return false;
-    if (isSuperAdmin) return true;
-    return user.role === 'collector';
+    if (user.deletedAt || user.id === session.user.id || user.status === 'disabled') return false;
+    return canManageUser(user);
+  }
+  function UserRows({ title, rows }) {
+    return (
+      <section>
+        <h3>{title}</h3>
+        {rows.length === 0 ? <p className="hint">暂无{title}。</p> : <div className="user-list">{rows.map((user) => (
+          <div key={user.id} className={user.deletedAt || user.status !== 'active' ? 'user-row disabled' : 'user-row'}>
+            <div>
+              <strong>{user.displayName}</strong>
+              <small>{user.phone || user.username} · {user.company || '未填写单位'}</small>
+            </div>
+            <span>{ROLE_LABELS[user.role] || user.role}</span>
+            <span>{STATUS_LABELS[user.status] || user.status}{user.deletedAt ? ' · 已删除' : ''}</span>
+            <div className="inline-actions compact">
+              {user.status === 'pending' && canManageUser(user) && <button type="button" onClick={() => changeStatus(user, 'active')}>通过</button>}
+              {user.status === 'pending' && canManageUser(user) && <button type="button" className="ghost danger" onClick={() => changeStatus(user, 'rejected')}>拒绝</button>}
+              {user.status !== 'active' && !user.deletedAt && canManageUser(user) && <button type="button" className="ghost" onClick={() => changeStatus(user, 'active')}>启用</button>}
+              {canManageUser(user) && <button type="button" className="ghost" onClick={() => beginEdit(user)}>编辑</button>}
+              {canManageUser(user) && <button type="button" className="ghost" onClick={() => { setResetId(user.id); setResetPassword(''); setEditingId(''); }}>重置密码</button>}
+              {canDeleteUser(user) && <button type="button" className="ghost danger" onClick={() => deleteUser(user)}>停用</button>}
+            </div>
+          </div>
+        ))}</div>}
+      </section>
+    );
   }
   return (
     <div className="view-stack">
       <div className="section-head">
         <div>
           <h2>账号管理</h2>
-          <p className="hint">{isSuperAdmin ? '完全管理员可创建和删除三类账号。' : '项目管理员只能创建和删除采集员账号。'}</p>
+          <p className="hint">{isSuperAdmin ? '完全管理员可审批、创建、编辑和停用全部账号。' : '项目管理员只能审批、创建、编辑和停用采集员。'}</p>
         </div>
       </div>
       <form className="panel-subform" onSubmit={createUser}>
         <h3>创建账号</h3>
         <div className="field-grid">
-          <label>用户名<input value={form.username} onChange={(event) => setForm({ ...form, username: event.target.value })} /></label>
+          <label>手机号<input inputMode="tel" value={form.phone} onChange={(event) => setForm({ ...form, phone: event.target.value })} /></label>
           <label>显示名称<input value={form.displayName} onChange={(event) => setForm({ ...form, displayName: event.target.value })} /></label>
+          <label>工作单位<input value={form.company} onChange={(event) => setForm({ ...form, company: event.target.value })} /></label>
           <label>密码<input type="password" value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} /></label>
           <label>角色<select value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value })}>{roleOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
         </div>
@@ -1330,24 +1499,39 @@ function AccountPanel({ session, isSuperAdmin, confirm }) {
         {message && <p className="hint">{message}</p>}
         {error && <p className="error">{error}</p>}
       </form>
+      {editingId && editForm && (
+        <form className="panel-subform" onSubmit={saveEdit}>
+          <div className="section-head">
+            <h3>编辑账号</h3>
+            <button type="button" className="ghost" onClick={() => { setEditingId(''); setEditForm(null); }}>取消</button>
+          </div>
+          <div className="field-grid">
+            <label>手机号<input inputMode="tel" value={editForm.phone} onChange={(event) => setEditForm({ ...editForm, phone: event.target.value })} /></label>
+            <label>姓名<input value={editForm.displayName} onChange={(event) => setEditForm({ ...editForm, displayName: event.target.value })} /></label>
+            <label>工作单位<input value={editForm.company} onChange={(event) => setEditForm({ ...editForm, company: event.target.value })} /></label>
+            <label>角色<select value={editForm.role} onChange={(event) => setEditForm({ ...editForm, role: event.target.value })}>{roleOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+          </div>
+          <button type="submit">保存账号资料</button>
+        </form>
+      )}
+      {resetId && (
+        <form className="panel-subform" onSubmit={resetUserPassword}>
+          <div className="section-head">
+            <h3>重置密码</h3>
+            <button type="button" className="ghost" onClick={() => { setResetId(''); setResetPassword(''); }}>取消</button>
+          </div>
+          <label>新密码<input type="password" value={resetPassword} onChange={(event) => setResetPassword(event.target.value)} /></label>
+          <button type="submit">保存新密码</button>
+        </form>
+      )}
       <section>
         <div className="section-head">
           <h3>账号列表</h3>
-          <SearchBox placeholder="搜索账号、姓名或角色" value={keyword} onChange={setKeyword} />
+          <SearchBox placeholder="搜索手机号、姓名、单位或角色" value={keyword} onChange={setKeyword} />
         </div>
-        <div className="user-list">
-          {filteredUsers.map((user) => (
-            <div key={user.id} className={user.deletedAt ? 'user-row disabled' : 'user-row'}>
-              <div>
-                <strong>{user.displayName}</strong>
-                <small>{user.username}</small>
-              </div>
-              <span>{ROLE_LABELS[user.role] || user.role}</span>
-              <span>{user.deletedAt ? `已删除：${new Date(user.deletedAt).toLocaleString()}` : `创建：${new Date(user.createdAt).toLocaleDateString()}`}</span>
-              <button type="button" className="ghost danger" disabled={!canDeleteUser(user)} onClick={() => deleteUser(user)}>{user.deletedAt ? '已删除' : user.id === session.user.id ? '当前账号' : '删除'}</button>
-            </div>
-          ))}
-        </div>
+        <UserRows title="待审批账号" rows={pendingUsers} />
+        <UserRows title="已启用账号" rows={activeUsers} />
+        <UserRows title="已停用或已拒绝账号" rows={inactiveUsers} />
         {filteredUsers.length === 0 && <EmptyState title="没有匹配账号" text="调整搜索条件后再查看。" />}
       </section>
     </div>
@@ -1397,8 +1581,8 @@ function DiagnosticsPanel({ queue, token }) {
         <h3>服务器地址</h3>
         <p>当前前端 API：{getApiBaseUrl() || '同源访问'}</p>
         <p>公网地址：{diagnostics?.publicBaseUrl || '未配置'}</p>
-        <p>App 推荐填写：{diagnostics?.suggestedAppUrl || '未检测到'}</p>
-        <p>局域网后端：{diagnostics?.lanUrls?.join('，') || '未检测到'}</p>
+        <p>App 固定地址：{FIXED_CLOUD_API_BASE_URL}</p>
+        <p>内部后端：127.0.0.1:3001（正式环境由 Nginx 转发）</p>
         <p>数据目录：{diagnostics?.dataDir || '未检测到'}</p>
         <p>上传目录：{diagnostics?.uploadDir || '未检测到'}</p>
       </section>
@@ -1465,7 +1649,7 @@ function HealthPanel({ queue, token, confirm }) {
       setBusy(false);
     }
   }
-  return <div className="view-stack"><div className="section-head"><div><h2>运行健康</h2><p className="hint">检查后端、数据库、上传目录、磁盘和云端访问地址。</p></div><a className="button-link" href={apiUrl(`/api/admin/backup?token=${encodeURIComponent(token)}`)}>一键备份</a></div>{health && <div className="check-grid"><div><strong>{health.status}</strong><span>后端状态</span></div><div><strong>{health.database ? '正常' : '异常'}</strong><span>数据库</span></div><div><strong>{health.uploadWritable ? '可写' : '不可写'}</strong><span>上传目录</span></div><div><strong>{queue.length}</strong><span>本机待同步</span></div></div>}<section className="download-card"><h3>部署信息</h3><p>版本：{version?.version || '未知'} · 构建时间：{version?.buildTime || '未知'}</p><p>公网地址：{health?.publicBaseUrl || '未配置'}</p><p>App 推荐填写：{health?.suggestedAppUrl || '未检测到'}</p><p>数据目录：{health?.dataDir}</p><p>上传目录：{health?.uploadDir}</p><p>备份目录：{health?.backupDir}</p><p>局域网地址：{health?.lanUrls?.join('，') || '未检测到'}</p><p>磁盘可用：{health?.disk ? `${Math.round(health.disk.availableBytes / 1024 / 1024 / 1024)} GB` : '未检测到'}</p>{version?.apk?.available && <a className="button-link" href={apiUrl(`/api/app/apk?token=${encodeURIComponent(token)}`)}>下载当前 APK</a>}</section><section className="download-card"><div className="section-head"><h3>最近备份</h3><button type="button" className="ghost" onClick={loadHealth}>刷新</button></div>{backups.length === 0 ? <p className="hint">暂无备份文件。</p> : <div className="backup-list">{backups.map((backup) => <div key={backup.fileName} className="backup-row"><strong>{backup.fileName}</strong><span>{formatBytes(backup.size)}</span><span>{new Date(backup.createdAt).toLocaleString()}</span></div>)}</div>}</section><form className="panel-subform" onSubmit={restoreBackup}><h3>从备份恢复</h3><p className="hint">支持本系统一键备份生成的 ZIP。恢复前会自动生成当前安全备份，恢复后请重启后端服务。执行前请输入“确认恢复”。</p><input type="file" accept=".zip,.sqlite,.db" onChange={(event) => setBackupFile(event.target.files?.[0] || null)} /><input placeholder="输入：确认恢复" value={restorePhrase} onChange={(event) => setRestorePhrase(event.target.value)} /><button type="submit" disabled={!backupFile || busy || restorePhrase.trim() !== '确认恢复'}>上传并恢复</button>{restoreMessage && <p className="hint">{restoreMessage}</p>}</form></div>;
+  return <div className="view-stack"><div className="section-head"><div><h2>运行健康</h2><p className="hint">检查后端、数据库、上传目录、磁盘和云端访问地址。</p></div><a className="button-link" href={apiUrl(`/api/admin/backup?token=${encodeURIComponent(token)}`)}>一键备份</a></div>{health && <div className="check-grid"><div><strong>{health.status}</strong><span>后端状态</span></div><div><strong>{health.database ? '正常' : '异常'}</strong><span>数据库</span></div><div><strong>{health.uploadWritable ? '可写' : '不可写'}</strong><span>上传目录</span></div><div><strong>{queue.length}</strong><span>本机待同步</span></div></div>}<section className="download-card"><h3>部署信息</h3><p>版本：{version?.version || '未知'} · 构建时间：{version?.buildTime || '未知'}</p><p>公网地址：{health?.publicBaseUrl || '未配置'}</p><p>App 固定地址：{FIXED_CLOUD_API_BASE_URL}</p><p>内部后端：127.0.0.1:3001（正式环境由 Nginx 转发）</p><p>数据目录：{health?.dataDir}</p><p>上传目录：{health?.uploadDir}</p><p>备份目录：{health?.backupDir}</p><p>磁盘可用：{health?.disk ? `${Math.round(health.disk.availableBytes / 1024 / 1024 / 1024)} GB` : '未检测到'}</p>{version?.apk?.available && <a className="button-link" href={apiUrl(`/api/app/apk?token=${encodeURIComponent(token)}`)}>下载当前 APK</a>}</section><section className="download-card"><div className="section-head"><h3>最近备份</h3><button type="button" className="ghost" onClick={loadHealth}>刷新</button></div>{backups.length === 0 ? <p className="hint">暂无备份文件。</p> : <div className="backup-list">{backups.map((backup) => <div key={backup.fileName} className="backup-row"><strong>{backup.fileName}</strong><span>{formatBytes(backup.size)}</span><span>{new Date(backup.createdAt).toLocaleString()}</span></div>)}</div>}</section><form className="panel-subform" onSubmit={restoreBackup}><h3>从备份恢复</h3><p className="hint">支持本系统一键备份生成的 ZIP。恢复前会自动生成当前安全备份，恢复后请重启后端服务。执行前请输入“确认恢复”。</p><input type="file" accept=".zip,.sqlite,.db" onChange={(event) => setBackupFile(event.target.files?.[0] || null)} /><input placeholder="输入：确认恢复" value={restorePhrase} onChange={(event) => setRestorePhrase(event.target.value)} /><button type="submit" disabled={!backupFile || busy || restorePhrase.trim() !== '确认恢复'}>上传并恢复</button>{restoreMessage && <p className="hint">{restoreMessage}</p>}</form></div>;
 }
 
 function EmptyState({ title, text }) {

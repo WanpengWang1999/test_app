@@ -1,10 +1,28 @@
 server {
     listen 80;
-    server_name photo.example.com;
+    server_name wangwanpeng.qzz.io;
 
-    # Use Certbot or your cloud provider certificate manager for HTTPS.
-    # After HTTPS is ready, redirect 80 to 443.
     client_max_body_size 80m;
+
+    location /.well-known/acme-challenge/ {
+        root /var/www/html;
+    }
+
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl http2;
+    server_name wangwanpeng.qzz.io;
+
+    ssl_certificate /etc/letsencrypt/live/wangwanpeng.qzz.io/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/wangwanpeng.qzz.io/privkey.pem;
+
+    client_max_body_size 80m;
+    proxy_read_timeout 300s;
+    proxy_send_timeout 300s;
 
     location / {
         proxy_pass http://127.0.0.1:3001;
@@ -12,7 +30,7 @@ server {
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Proto https;
     }
 
     location /ws {
@@ -23,6 +41,6 @@ server {
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Proto https;
     }
 }

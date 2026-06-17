@@ -3,8 +3,8 @@
   "appName": "工程照片采集",
   "webDir": "dist",
   "server": {
-    "cleartext": true,
+    "cleartext": false,
     "androidScheme": "http",
-    "allowNavigation": ["*"]
+    "allowNavigation": ["wangwanpeng.qzz.io"]
   }
 }

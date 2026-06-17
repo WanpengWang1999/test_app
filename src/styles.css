@@ -371,7 +371,7 @@ p {
 
 .user-row {
   display: grid;
-  grid-template-columns: minmax(130px, 1.2fr) 110px minmax(150px, 1fr) auto;
+  grid-template-columns: minmax(130px, 1.2fr) 100px minmax(96px, 0.8fr) minmax(180px, auto);
   gap: 8px;
   align-items: center;
   border: 1px solid #dde5df;
@@ -393,6 +393,38 @@ p {
 
 .user-row.disabled strong {
   text-decoration: line-through;
+}
+
+.segmented {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin: 12px 0;
+  padding: 4px;
+  border: 1px solid #dde5df;
+  border-radius: 8px;
+  background: #f6f8f6;
+}
+
+.segmented button {
+  background: transparent;
+  color: #17221f;
+}
+
+.segmented button.active {
+  background: #126b5a;
+  color: #fff;
+}
+
+.inline-actions.compact {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.inline-actions.compact button {
+  min-height: 36px;
+  padding: 8px 10px;
 }
 
 .project-actions {
@@ -850,6 +882,13 @@ input[type="file"] {
   display: grid;
   place-items: center;
   font-size: 13px;
+}
+
+.photo-placeholder.large {
+  min-height: 260px;
+  aspect-ratio: auto;
+  padding: 16px;
+  text-align: center;
 }
 
 .image-button {
