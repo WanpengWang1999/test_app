@@ -150,12 +150,17 @@ function App() {
   const [projects, setProjects] = useState([]);
   const [activeProjectId, setActiveProjectId] = useState(() => readAccountStorage('last-active-project-id', session?.user?.id));
   const [activeView, setActiveView] = useState('projects');
+  const [viewHistory, setViewHistory] = useState([]);
   const [manageProjectId, setManageProjectId] = useState('');
   const [capturePage, setCapturePage] = useState('projectList');
   const [captureBackSignal, setCaptureBackSignal] = useState(0);
+  const [syncBackSignal, setSyncBackSignal] = useState(0);
+  const [progressBackSignal, setProgressBackSignal] = useState(0);
+  const [manageBackSignal, setManageBackSignal] = useState(0);
   const [tree, setTree] = useState(null);
   const [progress, setProgress] = useState(null);
   const [photos, setPhotos] = useState([]);
+  const [loadingProjectId, setLoadingProjectId] = useState('');
   const [queue, setQueue] = useState([]);
   const [syncingIds, setSyncingIds] = useState([]);
   const [uploadProgress, setUploadProgress] = useState(null);
@@ -166,12 +171,16 @@ function App() {
   const lastBackAtRef = React.useRef(0);
   const realtimeRefreshTimerRef = React.useRef(null);
   const { confirm, dialog: confirmDialog } = useConfirmDialog();
+  const projectLoadRequestRef = React.useRef('');
 
   const role = session?.user?.role;
   const isSuperAdmin = role === 'super_admin';
   const canManageProjects = isSuperAdmin || role === 'project_admin';
   const allowedViews = roleAllowedViews(role);
   const bottomViews = ['projects', 'sync', 'more'];
+  const activeTreeMatches = tree && activeProjectId && String(tree.id) === String(activeProjectId);
+  const captureNeedsProject = activeView === 'capture' && activeProjectId;
+  const captureProjectLoading = captureNeedsProject && !activeTreeMatches && loadingProjectId === String(activeProjectId);
 
   useEffect(() => {
     if (session?.token) setAuthToken(session.token);
@@ -201,6 +210,7 @@ function App() {
       setTree(null);
       setProgress(null);
       setPhotos([]);
+      setLoadingProjectId('');
       return;
     }
     loadProject(activeProjectId);
@@ -262,13 +272,16 @@ function App() {
   }, [activeProjectId, session?.user?.id]);
 
   useEffect(() => {
-    if (!allowedViews.includes(activeView)) setActiveView('projects');
+    if (!allowedViews.includes(activeView)) {
+      setActiveView('projects');
+      setViewHistory([]);
+    }
   }, [allowedViews.join('|'), activeView]);
 
   useEffect(() => {
     if (!session) return;
     return onNativeBackButton(handleNativeBack);
-  }, [session, activeView, capturePage]);
+  }, [session, activeView, capturePage, captureProjectLoading, viewHistory]);
 
   useEffect(() => {
     cleanupLegacyAppCache();
@@ -303,21 +316,30 @@ function App() {
   }
 
   async function loadProject(projectId) {
+    const requestedProjectId = String(projectId || '');
+    if (!requestedProjectId) return;
+    projectLoadRequestRef.current = requestedProjectId;
+    setLoadingProjectId(requestedProjectId);
     try {
       const [nextTree, nextProgress, nextPhotos] = await Promise.all([
         api(`/api/projects/${projectId}/tree`),
         api(`/api/projects/${projectId}/progress`),
         api(`/api/projects/${projectId}/photos`)
       ]);
+      if (projectLoadRequestRef.current !== requestedProjectId) return;
       setTree(nextTree);
       setProgress(nextProgress);
       setPhotos(nextPhotos.photos);
       await putCachedTree(nextTree);
     } catch (err) {
       const cached = await getCachedTree(Number(projectId));
+      if (projectLoadRequestRef.current !== requestedProjectId) return;
       setTree(cached);
       setProgress(null);
+      setPhotos([]);
       setNotice(`项目数据加载失败，已尝试使用离线缓存：${err.message}`);
+    } finally {
+      if (projectLoadRequestRef.current === requestedProjectId) setLoadingProjectId('');
     }
   }
 
@@ -389,31 +411,27 @@ function App() {
     localStorage.setItem('pwa-install-tip-hidden', '1');
   }
 
-  function enterProject(projectId, view = 'capture') {
-    const nextProjectId = String(projectId);
-    writeAccountStorage('last-active-project-id', session?.user?.id, nextProjectId);
-    setActiveProjectId(nextProjectId);
-    setManageProjectId(view === 'manage' ? String(projectId) : '');
-    setActiveView(view);
+  function navigateTo(view, options = {}) {
+    const nextView = allowedViews.includes(view) ? view : 'projects';
+    const pushHistory = options.pushHistory !== false;
+    if (pushHistory && activeView !== nextView) {
+      setViewHistory((list) => [...list.filter(Boolean), activeView].slice(-20));
+    }
+    if (options.clearHistory) setViewHistory([]);
+    setActiveView(nextView);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
-  function leaveProject() {
-    setActiveView('projects');
-    setCapturePage('projectList');
+  function goBack() {
+    const previousView = viewHistory[viewHistory.length - 1];
+    if (!previousView) return false;
+    setViewHistory((list) => list.slice(0, -1));
+    setActiveView(allowedViews.includes(previousView) ? previousView : 'projects');
     window.scrollTo({ top: 0, behavior: 'smooth' });
+    return true;
   }
 
-  function handleNativeBack() {
-    if (activeView === 'capture') {
-      setCaptureBackSignal((value) => value + 1);
-      return;
-    }
-    if (activeView !== 'projects') {
-      setActiveView('projects');
-      window.scrollTo({ top: 0, behavior: 'smooth' });
-      return;
-    }
+  function promptExitApp() {
     const now = Date.now();
     if (now - lastBackAtRef.current < 1800) {
       exitNativeApp();
@@ -423,11 +441,74 @@ function App() {
     setNotice('再按一次返回键退出 App。');
   }
 
+  function goBackOrPromptExit() {
+    if (!goBack()) promptExitApp();
+  }
+
+  function ensureProjectLoaded(projectId) {
+    const nextProjectId = String(projectId || '');
+    if (!nextProjectId) return;
+    const projectChanged = String(activeProjectId || '') !== nextProjectId;
+    const treeMatchesProject = tree && String(tree.id) === nextProjectId;
+    if (projectChanged) {
+      setTree(null);
+      setProgress(null);
+      setPhotos([]);
+      setLoadingProjectId(nextProjectId);
+      return;
+    }
+    if (!treeMatchesProject) {
+      loadProject(nextProjectId);
+    }
+  }
+
+  function enterProject(projectId, view = 'capture', options = {}) {
+    const nextProjectId = String(projectId);
+    writeAccountStorage('last-active-project-id', session?.user?.id, nextProjectId);
+    ensureProjectLoaded(nextProjectId);
+    setActiveProjectId(nextProjectId);
+    setManageProjectId(view === 'manage' || options.returnToManage ? String(projectId) : '');
+    navigateTo(view);
+  }
+
+  function leaveProject() {
+    setCapturePage('projectList');
+    if (!goBack()) navigateTo('projects', { pushHistory: false });
+  }
+
+  function handleNativeBack() {
+    if (activeView === 'capture') {
+      if (captureProjectLoading) {
+        goBackOrPromptExit();
+        return;
+      }
+      setCaptureBackSignal((value) => value + 1);
+      return;
+    }
+    if (activeView === 'sync') {
+      setSyncBackSignal((value) => value + 1);
+      return;
+    }
+    if (activeView === 'progress') {
+      setProgressBackSignal((value) => value + 1);
+      return;
+    }
+    if (activeView === 'manage') {
+      setManageBackSignal((value) => value + 1);
+      return;
+    }
+    if (activeView !== 'projects' && goBack()) {
+      return;
+    }
+    promptExitApp();
+  }
+
   function handleLogin(nextSession) {
     setSession(nextSession);
     setAuthToken(nextSession.token);
     localStorage.setItem('session', JSON.stringify(nextSession));
     setActiveView('projects');
+    setViewHistory([]);
   }
 
   function logout() {
@@ -440,6 +521,7 @@ function App() {
     setQueue([]);
     setActiveProjectId('');
     setActiveView('projects');
+    setViewHistory([]);
   }
 
   if (!session) return <Login onLogin={handleLogin} />;
@@ -466,24 +548,24 @@ function App() {
       )}
       <main className="workspace">
         <nav className="feature-nav" aria-label="功能导航">
-          {bottomViews.map((view) => <button key={view} type="button" className={navGroupForView(activeView) === view ? 'active' : ''} onClick={() => setActiveView(view)}>{VIEW_LABELS[view]}</button>)}
+          {bottomViews.map((view) => <button key={view} type="button" className={navGroupForView(activeView) === view ? 'active' : ''} onClick={() => navigateTo(view)}>{VIEW_LABELS[view]}</button>)}
         </nav>
         <section className="panel feature-panel">
           {activeView === 'projects' && <ProjectHome projects={projects} activeProjectId={activeProjectId} progress={progress} queue={queue} session={session} canManageProjects={canManageProjects} enterProject={enterProject} />}
-          {activeView === 'capture' && <CapturePanelV2 tree={tree} session={session} projectId={activeProjectId} photos={photos} queue={queue} reload={() => activeProjectId && loadProject(activeProjectId)} onQueued={async () => { await refreshQueue(); await syncQueue(); }} onPageChange={setCapturePage} onExitProject={leaveProject} backSignal={captureBackSignal} />}
-          {activeView === 'sync' && <SyncCenter queue={queue} photos={photos} tree={tree} syncingIds={syncingIds} refreshQueue={refreshQueue} retry={(ids) => syncQueue(ids)} syncPaused={syncPaused} setSyncPaused={handleSyncPausedChange} confirm={confirm} />}
-          {activeView === 'progress' && <ProgressPanel progress={progress} queue={queue} projectId={activeProjectId} photos={photos} session={session} reload={() => activeProjectId && loadProject(activeProjectId)} confirm={confirm} />}
-          {activeView === 'manage' && canManageProjects && <ProjectManagePanel projects={projects} activeProjectId={activeProjectId} manageProjectId={manageProjectId} clearManageProjectId={() => setManageProjectId('')} setActiveProjectId={setActiveProjectId} setActiveView={setActiveView} refreshProjects={refreshProjects} loadProject={loadProject} isSuperAdmin={isSuperAdmin} confirm={confirm} />}
+          {activeView === 'capture' && (captureProjectLoading ? <EmptyState title="正在加载项目" text="正在读取任务点和设备位，请稍候。" /> : <CapturePanelV2 tree={activeTreeMatches ? tree : null} session={session} projectId={activeProjectId} photos={photos} queue={queue} reload={() => activeProjectId && loadProject(activeProjectId)} onQueued={async () => { await refreshQueue(); await syncQueue(); }} onPageChange={setCapturePage} onExitProject={leaveProject} backSignal={captureBackSignal} />)}
+          {activeView === 'sync' && <SyncCenter queue={queue} photos={photos} tree={tree} syncingIds={syncingIds} refreshQueue={refreshQueue} retry={(ids) => syncQueue(ids)} syncPaused={syncPaused} setSyncPaused={handleSyncPausedChange} confirm={confirm} backSignal={syncBackSignal} onExitView={goBackOrPromptExit} />}
+          {activeView === 'progress' && <ProgressPanel progress={progress} queue={queue} projectId={activeProjectId} photos={photos} session={session} reload={() => activeProjectId && loadProject(activeProjectId)} confirm={confirm} backSignal={progressBackSignal} onExitView={goBackOrPromptExit} />}
+          {activeView === 'manage' && canManageProjects && <ProjectManagePanel projects={projects} activeProjectId={activeProjectId} manageProjectId={manageProjectId} clearManageProjectId={() => setManageProjectId('')} setActiveProjectId={setActiveProjectId} setActiveView={navigateTo} enterProject={enterProject} refreshProjects={refreshProjects} loadProject={loadProject} isSuperAdmin={isSuperAdmin} confirm={confirm} backSignal={manageBackSignal} onExitView={goBackOrPromptExit} />}
           {activeView === 'upload' && canManageProjects && <UploadPanel activeProjectId={activeProjectId} setActiveProjectId={setActiveProjectId} refreshProjects={refreshProjects} tree={tree} reload={() => activeProjectId && loadProject(activeProjectId)} isSuperAdmin={isSuperAdmin} token={session.token} confirm={confirm} />}
           {activeView === 'export' && canManageProjects && <ExportPanel progress={progress} projectId={activeProjectId} token={session.token} tree={tree} queue={queue} confirm={confirm} />}
           {activeView === 'accounts' && canManageProjects && <AccountPanel session={session} isSuperAdmin={isSuperAdmin} confirm={confirm} />}
           {activeView === 'health' && isSuperAdmin && <HealthPanel queue={queue} token={session.token} confirm={confirm} />}
           {activeView === 'diagnostics' && <DiagnosticsPanel queue={queue} token={session.token} />}
-          {activeView === 'more' && <MorePanel canManageProjects={canManageProjects} isSuperAdmin={isSuperAdmin} token={session.token} setActiveView={setActiveView} logout={logout} />}
+          {activeView === 'more' && <MorePanel canManageProjects={canManageProjects} isSuperAdmin={isSuperAdmin} token={session.token} setActiveView={navigateTo} logout={logout} />}
         </section>
       </main>
       <nav className="bottom-nav" aria-label="手机导航">
-        {bottomViews.map((view) => <button key={view} type="button" className={navGroupForView(activeView) === view ? 'active' : ''} onClick={() => setActiveView(view)}>{VIEW_LABELS[view]}</button>)}
+        {bottomViews.map((view) => <button key={view} type="button" className={navGroupForView(activeView) === view ? 'active' : ''} onClick={() => navigateTo(view)}>{VIEW_LABELS[view]}</button>)}
       </nav>
       {confirmDialog}
     </div>
@@ -744,7 +826,7 @@ function LocalPhotoImage({ item, alt }) {
   return src ? <img src={src} alt={alt} /> : <div className="photo-placeholder">本地照片</div>;
 }
 
-function SyncCenter({ queue, photos, tree, syncingIds, refreshQueue, retry, syncPaused, setSyncPaused, confirm }) {
+function SyncCenter({ queue, photos, tree, syncingIds, refreshQueue, retry, syncPaused, setSyncPaused, confirm, backSignal, onExitView }) {
   const [selectedProjectId, setSelectedProjectId] = useState('');
   const [selectedTaskId, setSelectedTaskId] = useState('');
   const [keyword, setKeyword] = useState('');
@@ -783,6 +865,22 @@ function SyncCenter({ queue, photos, tree, syncingIds, refreshQueue, retry, sync
   const syncedForTask = (id) => sortPhotosDesc(photos.filter((photo) => String(photo.taskPointId) === String(id)));
   const selectedProject = projects.find((project) => String(project.id) === String(selectedProjectId));
   const selectedTask = tasks.find((task) => String(task.id) === String(selectedTaskId));
+  useEffect(() => {
+    if (!backSignal) return;
+    if (previewPhoto) {
+      setPreviewPhoto(null);
+      return;
+    }
+    if (selectedTaskId) {
+      setSelectedTaskId('');
+      return;
+    }
+    if (selectedProjectId) {
+      setSelectedProjectId('');
+      return;
+    }
+    onExitView?.();
+  }, [backSignal]);
   const visibleProjects = projects.filter((project) => includesKeyword([
     project.name,
     ...localForProject(project.id).flatMap((item) => [item.metadata?.taskPointName, item.metadata?.devicePositionName, displayPhotoType(item.metadata?.photoType), item.lastError])
@@ -932,16 +1030,32 @@ function PhotoPreviewModal({ photo, onClose }) {
   );
 }
 
-function ProgressPanel({ progress, queue, projectId, photos, session, reload, confirm }) {
+function ProgressPanel({ progress, queue, projectId, photos, session, reload, confirm, backSignal, onExitView }) {
   const [selectedTaskId, setSelectedTaskId] = useState('');
   const [selectedDeviceId, setSelectedDeviceId] = useState('');
   const [projectKeyword, setProjectKeyword] = useState('');
   const [deviceKeyword, setDeviceKeyword] = useState('');
   const [photoKeyword, setPhotoKeyword] = useState('');
   const [previewPhoto, setPreviewPhoto] = useState(null);
-  if (!progress) return <EmptyState title="暂无进度" text="选择项目并联网后可查看采集进度。" />;
-  const selectedTask = progress.tasks.find((task) => String(task.id) === String(selectedTaskId));
+  const selectedTask = progress?.tasks.find((task) => String(task.id) === String(selectedTaskId));
   const selectedDevice = selectedTask?.devices.find((device) => String(device.id) === String(selectedDeviceId));
+  useEffect(() => {
+    if (!backSignal) return;
+    if (previewPhoto) {
+      setPreviewPhoto(null);
+      return;
+    }
+    if (selectedDeviceId) {
+      setSelectedDeviceId('');
+      return;
+    }
+    if (selectedTaskId) {
+      setSelectedTaskId('');
+      return;
+    }
+    onExitView?.();
+  }, [backSignal]);
+  if (!progress) return <EmptyState title="暂无进度" text="选择项目并联网后可查看采集进度。" />;
   const localForTask = (id) => queue.filter((item) => String(item.metadata?.taskPointId) === String(id));
   const localForDevice = (id) => queue.filter((item) => String(item.metadata?.devicePositionId) === String(id));
   const syncedForTask = (id) => sortPhotosDesc(photos.filter((photo) => String(photo.taskPointId) === String(id)));
@@ -984,7 +1098,7 @@ function ProgressPanel({ progress, queue, projectId, photos, session, reload, co
   return <div className="view-stack"><div className="section-head"><div><h2>采集进度</h2><p className="hint">{progress.project.name}</p></div></div><SummaryStats progress={progress} queue={queue} /><SearchBox placeholder="搜索任务点、设备位、编号、设备类型或缺失项" value={projectKeyword} onChange={setProjectKeyword} /><div className="task-point-grid">{visibleTasks.map((task) => { const local = localForTask(task.id); const synced = syncedForTask(task.id); return <button key={task.id} type="button" className={`task-point-card ${progressStatusClass({ missingCount: task.totalDevices - task.completedDevices, localPending: local.length, failed: local.filter((item) => item.status === 'failed').length })}`} onClick={() => setSelectedTaskId(String(task.id))}><span>{task.name}</span><strong>{task.completedDevices}/{task.totalDevices}</strong><small>已同步照片 {synced.length} 张 · 待同步 {local.length} 张</small><small>{task.totalDevices - task.completedDevices === 0 ? '全部设备已完成必拍' : `未完成设备 ${task.totalDevices - task.completedDevices} 台`}</small></button>; })}</div>{visibleTasks.length === 0 && <EmptyState title="没有匹配的任务点" text="调整搜索条件后再查看项目进度。" />}</div>;
 }
 
-function ProjectManagePanel({ projects, activeProjectId, manageProjectId, clearManageProjectId, setActiveProjectId, setActiveView, refreshProjects, loadProject, isSuperAdmin, confirm }) {
+function ProjectManagePanel({ projects, activeProjectId, manageProjectId, clearManageProjectId, setActiveProjectId, setActiveView, enterProject, refreshProjects, loadProject, isSuperAdmin, confirm, backSignal, onExitView }) {
   const [manageMode, setManageMode] = useState('list');
   const [newName, setNewName] = useState('');
   const [renameValue, setRenameValue] = useState('');
@@ -1000,6 +1114,19 @@ function ProjectManagePanel({ projects, activeProjectId, manageProjectId, clearM
     setManageMode('detail');
     clearManageProjectId?.();
   }, [manageProjectId, projects]);
+
+  useEffect(() => {
+    if (!backSignal) return;
+    if (manageMode === 'cleanup') {
+      setManageMode(activeProject ? 'detail' : 'list');
+      return;
+    }
+    if (manageMode === 'detail') {
+      setManageMode('list');
+      return;
+    }
+    onExitView?.();
+  }, [backSignal]);
 
   async function createProject(event) {
     event.preventDefault();
@@ -1106,7 +1233,7 @@ function ProjectManagePanel({ projects, activeProjectId, manageProjectId, clearM
             <button type="submit">保存改名</button>
           </form>
           <div className="detail-actions">
-            <button type="button" onClick={() => setActiveView('capture')}>进入采集</button>
+            <button type="button" onClick={() => enterProject(activeProject.id, 'capture', { returnToManage: true })}>进入采集</button>
             <button type="button" className="ghost" onClick={() => setActiveView('upload')}>导入 Excel / 照片类型</button>
             <button type="button" className="ghost" onClick={() => setActiveView('export')}>导出与检查</button>
             <button type="button" className="ghost" onClick={() => toggleArchive(activeProject)}>{activeProject.archivedAt ? '取消归档' : '归档项目'}</button>
@@ -1138,7 +1265,7 @@ function ProjectManagePanel({ projects, activeProjectId, manageProjectId, clearM
             <p>创建人：{project.createdByName || '未知'}</p>
             <div className="project-actions">
               <button type="button" onClick={() => { setActiveProjectId(String(project.id)); setRenameValue(project.name); setManageMode('detail'); }}>管理详情</button>
-              <button type="button" className="ghost" onClick={() => { setActiveProjectId(String(project.id)); setActiveView('capture'); }}>进入采集</button>
+              <button type="button" className="ghost" onClick={() => enterProject(project.id, 'capture')}>进入采集</button>
             </div>
           </article>
         ))}
