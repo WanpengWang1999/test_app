@@ -8,8 +8,8 @@ export NODE_ENV="${NODE_ENV:-production}"
 export HOST="${HOST:-127.0.0.1}"
 export PORT="${PORT:-3001}"
 export DATA_DIR="${DATA_DIR:-/data/telecom-photo}"
-export PUBLIC_BASE_URL="${PUBLIC_BASE_URL:-https://wangwanpeng.qzz.io}"
-export ALLOWED_ORIGINS="${ALLOWED_ORIGINS:-https://wangwanpeng.qzz.io,capacitor://localhost}"
+export PUBLIC_BASE_URL="${PUBLIC_BASE_URL:-http://114.55.109.150:3001}"
+export ALLOWED_ORIGINS="${ALLOWED_ORIGINS:-http://114.55.109.150:3001,capacitor://localhost}"
 
 if [ ! -f "dist/index.html" ]; then
   echo "dist/index.html not found. Run: npm run build"

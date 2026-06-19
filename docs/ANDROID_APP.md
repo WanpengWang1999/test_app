@@ -3,7 +3,7 @@
 当前项目使用 Capacitor Android，把 React/Vite 前端打包为内部测试 APK。正式 App 固定连接：
 
 ```text
-https://wangwanpeng.qzz.io
+http://114.55.109.150:3001
 ```
 
 用户安装后只需要使用手机号和密码登录，不需要填写服务器地址。
@@ -41,7 +41,7 @@ android\app\build\outputs\apk\debug\app-debug.apk
 1. 确认服务器健康检查正常：
 
 ```text
-https://wangwanpeng.qzz.io/api/public/health
+http://114.55.109.150:3001/api/public/health
 ```
 
 2. 重新生成 APK。

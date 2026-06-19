@@ -7,7 +7,7 @@
 正式云端地址：
 
 ```text
-https://wangwanpeng.qzz.io
+http://114.55.109.150:3001
 ```
 
 Android App 已固定连接该地址。
@@ -137,7 +137,7 @@ Android App 已固定连接该地址。
 确认手机可以访问：
 
 ```text
-https://wangwanpeng.qzz.io/api/public/health
+http://114.55.109.150:3001/api/public/health
 ```
 
 如果无法访问，检查域名解析、HTTPS 证书、Nginx、服务器安全组和后端服务。

@@ -751,7 +751,14 @@ function LocalPhotoImage({ item, alt }) {
       if (nextUrl) URL.revokeObjectURL(nextUrl);
     };
   }, [item.id, item.originalFilePath]);
-  return src ? <img src={src} alt={alt} /> : <div className="photo-placeholder">本地照片</div>;
+
+  useEffect(() => {
+    return () => {
+      if (src?.startsWith('blob:')) URL.revokeObjectURL(src);
+    };
+  }, [src]);
+
+  return src ? <img src={src} alt={alt} loading="lazy" /> : <div className="photo-placeholder">本地照片</div>;
 }
 
 function EmptyState({ title, text }) {

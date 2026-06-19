@@ -3,7 +3,7 @@
 本文用于把“工程照片采集”部署为正式云端访问方式。正式入口统一为：
 
 ```text
-https://wangwanpeng.qzz.io
+http://114.55.109.150:3001
 ```
 
 Node 后端只监听服务器本机 `127.0.0.1:3001`，公网通过 Nginx 的 `80/443` 访问。
@@ -13,7 +13,7 @@ Node 后端只监听服务器本机 `127.0.0.1:3001`，公网通过 Nginx 的 `8
 1. 在域名 DNS 中添加 A 记录：
 
 ```text
-wangwanpeng.qzz.io -> 服务器公网 IP
+域名 -> 服务器公网 IP（域名备案和 HTTPS 完成后再启用）
 ```
 
 2. 云服务器安全组只开放：
@@ -67,13 +67,13 @@ NODE_ENV=production
 HOST=127.0.0.1
 PORT=3001
 DATA_DIR=/data/telecom-photo
-PUBLIC_BASE_URL=https://wangwanpeng.qzz.io
-ALLOWED_ORIGINS=https://wangwanpeng.qzz.io,capacitor://localhost
+PUBLIC_BASE_URL=http://114.55.109.150:3001
+ALLOWED_ORIGINS=http://114.55.109.150:3001,capacitor://localhost
 AUTH_SECRET=请改成长随机字符串
 INITIAL_ADMIN_PHONE=19720410920
 INITIAL_ADMIN_PASSWORD=WWP1999
 ENABLE_DEMO_USERS=0
-VITE_FIXED_API_BASE_URL=https://wangwanpeng.qzz.io
+VITE_FIXED_API_BASE_URL=http://114.55.109.150:3001
 ```
 
 创建数据目录：
@@ -153,13 +153,13 @@ sudo systemctl reload nginx
 首次申请证书：
 
 ```bash
-sudo certbot --nginx -d wangwanpeng.qzz.io
+sudo certbot --nginx -d 待备案域名
 ```
 
 证书完成后检查：
 
 ```bash
-curl https://wangwanpeng.qzz.io/api/public/health
+curl http://114.55.109.150:3001/api/public/health
 ```
 
 ## 7. 初始登录和账号注册
@@ -180,7 +180,7 @@ curl https://wangwanpeng.qzz.io/api/public/health
 App 固定连接：
 
 ```text
-https://wangwanpeng.qzz.io
+http://114.55.109.150:3001
 ```
 
 重新生成 APK：
@@ -206,7 +206,7 @@ npm install
 npm run build
 sudo systemctl restart telecom-photo
 sudo systemctl status telecom-photo --no-pager
-curl https://wangwanpeng.qzz.io/api/public/health
+curl http://114.55.109.150:3001/api/public/health
 ```
 
 ## 10. 备份

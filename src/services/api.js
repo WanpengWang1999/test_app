@@ -1,6 +1,7 @@
 ﻿export const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
 export const WS_BASE_URL = (import.meta.env.VITE_WS_BASE_URL || '').replace(/\/$/, '');
-export const FIXED_CLOUD_API_BASE_URL = (import.meta.env.VITE_FIXED_API_BASE_URL || 'https://wangwanpeng.qzz.io').replace(/\/$/, '');
+export const TEST_API_BASE_URL = (import.meta.env.VITE_TEST_API_BASE_URL || 'http://114.55.109.150:3001').replace(/\/$/, '');
+export const FIXED_CLOUD_API_BASE_URL = (import.meta.env.VITE_FIXED_API_BASE_URL || TEST_API_BASE_URL).replace(/\/$/, '');
 const SERVER_CONFIG_KEY = 'server-config';
 
 let token = '';

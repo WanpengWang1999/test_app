@@ -158,6 +158,7 @@ function App() {
   const [showInstallTip, setShowInstallTip] = useState(() => localStorage.getItem('pwa-install-tip-hidden') !== '1');
   const [notice, setNotice] = useState('');
   const lastBackAtRef = React.useRef(0);
+  const realtimeRefreshTimerRef = React.useRef(null);
   const { confirm, dialog: confirmDialog } = useConfirmDialog();
 
   const role = session?.user?.role;
@@ -205,13 +206,23 @@ function App() {
     try {
       socket = new WebSocket(wsUrl('/ws'));
       socket.onmessage = () => {
-        refreshProjects();
-        if (activeProjectId) loadProject(activeProjectId);
+        if (realtimeRefreshTimerRef.current) clearTimeout(realtimeRefreshTimerRef.current);
+        realtimeRefreshTimerRef.current = setTimeout(() => {
+          realtimeRefreshTimerRef.current = null;
+          refreshProjects();
+          if (activeProjectId) loadProject(activeProjectId);
+        }, 500);
       };
     } catch {
       socket = null;
     }
-    return () => socket?.close();
+    return () => {
+      if (realtimeRefreshTimerRef.current) {
+        clearTimeout(realtimeRefreshTimerRef.current);
+        realtimeRefreshTimerRef.current = null;
+      }
+      socket?.close();
+    };
   }, [session, activeProjectId]);
 
   useEffect(() => {

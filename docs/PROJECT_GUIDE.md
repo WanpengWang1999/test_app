@@ -10,7 +10,7 @@
 - IndexedDB 离线同步队列。
 - Capacitor Android App 壳。
 
-正式云端入口为 `https://wangwanpeng.qzz.io`。Web 端同源访问后端，Android App 固定连接该域名。
+正式云端入口为 `http://114.55.109.150:3001`。Web 端同源访问后端，Android App 固定连接该域名。
 
 ## 主要目录
 
@@ -98,7 +98,7 @@ node scripts\mock-verify.mjs
 正式部署使用：
 
 ```text
-https://wangwanpeng.qzz.io
+http://114.55.109.150:3001
 ```
 
 Node 后端监听 `127.0.0.1:3001`，由 Nginx 对外提供 HTTPS。详细步骤见 `docs/CLOUD_TEST_DEPLOY.md`。
