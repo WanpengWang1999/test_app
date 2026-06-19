@@ -63,7 +63,6 @@ nano .env
 测试 `.env` 关键项：
 
 ```text
-NODE_ENV=production
 HOST=0.0.0.0
 PORT=3001
 DATA_DIR=/data/telecom-photo
@@ -116,6 +115,7 @@ After=network.target
 Type=simple
 WorkingDirectory=/opt/telecom-photo
 EnvironmentFile=/opt/telecom-photo/.env
+Environment=NODE_ENV=production
 ExecStart=/usr/bin/npm start
 Restart=always
 RestartSec=5
