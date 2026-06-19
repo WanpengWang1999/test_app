@@ -32,6 +32,12 @@ function roleAllowedViews(role) {
   return ['projects', 'capture', 'sync', 'progress', 'diagnostics', 'more'];
 }
 
+function navGroupForView(view) {
+  if (view === 'sync') return 'sync';
+  if (['more', 'accounts', 'health', 'diagnostics'].includes(view)) return 'more';
+  return 'projects';
+}
+
 function diagnoseSyncError(error) {
   const message = String(error?.message || error || '');
   if (!navigator.onLine) return '网络已断开，恢复联网后可重试。';
@@ -460,7 +466,7 @@ function App() {
       )}
       <main className="workspace">
         <nav className="feature-nav" aria-label="功能导航">
-          {bottomViews.map((view) => <button key={view} type="button" className={activeView === view ? 'active' : ''} onClick={() => setActiveView(view)}>{VIEW_LABELS[view]}</button>)}
+          {bottomViews.map((view) => <button key={view} type="button" className={navGroupForView(activeView) === view ? 'active' : ''} onClick={() => setActiveView(view)}>{VIEW_LABELS[view]}</button>)}
         </nav>
         <section className="panel feature-panel">
           {activeView === 'projects' && <ProjectHome projects={projects} activeProjectId={activeProjectId} progress={progress} queue={queue} session={session} canManageProjects={canManageProjects} enterProject={enterProject} />}
@@ -477,7 +483,7 @@ function App() {
         </section>
       </main>
       <nav className="bottom-nav" aria-label="手机导航">
-        {bottomViews.map((view) => <button key={view} type="button" className={activeView === view ? 'active' : ''} onClick={() => setActiveView(view)}>{VIEW_LABELS[view]}</button>)}
+        {bottomViews.map((view) => <button key={view} type="button" className={navGroupForView(activeView) === view ? 'active' : ''} onClick={() => setActiveView(view)}>{VIEW_LABELS[view]}</button>)}
       </nav>
       {confirmDialog}
     </div>
