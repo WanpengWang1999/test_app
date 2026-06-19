@@ -1,6 +1,6 @@
 # Android App 打包与测试说明
 
-当前项目使用 Capacitor Android，把 React/Vite 前端打包为内部测试 APK。正式 App 固定连接：
+当前项目使用 Capacitor Android，把 React/Vite 前端打包为内部测试 APK。测试 App 固定连接：
 
 ```text
 http://114.55.109.150:3001
@@ -36,7 +36,7 @@ APK 输出位置：
 android\app\build\outputs\apk\debug\app-debug.apk
 ```
 
-## 云端正式测试
+## 云端测试
 
 1. 确认服务器健康检查正常：
 

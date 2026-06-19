@@ -699,7 +699,7 @@ function MorePanel({ canManageProjects, isSuperAdmin, token, setActiveView, logo
         {canManageProjects && <button type="button" className="menu-card" onClick={() => setActiveView('export')}><strong>导出成果</strong><span>导出照片、清单和 ZIP</span></button>}
         {canManageProjects && <button type="button" className="menu-card" onClick={() => setActiveView('accounts')}><strong>账号管理</strong><span>审批、创建、编辑和停用账号</span></button>}
         {isSuperAdmin && <button type="button" className="menu-card" onClick={() => setActiveView('health')}><strong>健康与备份</strong><span>查看后端状态和备份</span></button>}
-        <a className="menu-card" href={apkUrl}><strong>下载 APK</strong><span>云端正式测试安装包</span></a>
+        <a className="menu-card" href={apkUrl}><strong>下载 APK</strong><span>公网测试安装包</span></a>
       </div>
       <button type="button" className="ghost danger" onClick={logout}>退出登录</button>
     </div>
@@ -1593,7 +1593,7 @@ function DiagnosticsPanel({ queue, token }) {
         <p>当前前端 API：{getApiBaseUrl() || '同源访问'}</p>
         <p>公网地址：{diagnostics?.publicBaseUrl || '未配置'}</p>
         <p>App 固定地址：{FIXED_CLOUD_API_BASE_URL}</p>
-        <p>内部后端：127.0.0.1:3001（正式环境由 Nginx 转发）</p>
+        <p>后端模式：测试阶段直接开放 3001；正式域名模式再由 Nginx 转发</p>
         <p>数据目录：{diagnostics?.dataDir || '未检测到'}</p>
         <p>上传目录：{diagnostics?.uploadDir || '未检测到'}</p>
       </section>
@@ -1602,7 +1602,7 @@ function DiagnosticsPanel({ queue, token }) {
         <p>版本：{version?.version || diagnostics?.version || '未知'}</p>
         <p>构建时间：{version?.buildTime || diagnostics?.buildTime || '未知'}</p>
         <p>运行模式：{version?.mode || 'development'}</p>
-        <p>APK：{apk?.available ? `${apk.fileName} · ${formatBytes(apk.size)} · ${new Date(apk.updatedAt).toLocaleString()}` : '当前电脑尚未生成 APK'}</p>
+        <p>APK：{apk?.available ? `${apk.fileName} · ${formatBytes(apk.size)} · ${new Date(apk.updatedAt).toLocaleString()}` : '当前服务器尚未生成 APK'}</p>
         {apk?.available && <a className="button-link" href={apiUrl(`/api/app/apk?token=${encodeURIComponent(token)}`)}>下载当前 APK</a>}
       </section>
     </div>
@@ -1660,7 +1660,7 @@ function HealthPanel({ queue, token, confirm }) {
       setBusy(false);
     }
   }
-  return <div className="view-stack"><div className="section-head"><div><h2>运行健康</h2><p className="hint">检查后端、数据库、上传目录、磁盘和云端访问地址。</p></div><a className="button-link" href={apiUrl(`/api/admin/backup?token=${encodeURIComponent(token)}`)}>一键备份</a></div>{health && <div className="check-grid"><div><strong>{health.status}</strong><span>后端状态</span></div><div><strong>{health.database ? '正常' : '异常'}</strong><span>数据库</span></div><div><strong>{health.uploadWritable ? '可写' : '不可写'}</strong><span>上传目录</span></div><div><strong>{queue.length}</strong><span>本机待同步</span></div></div>}<section className="download-card"><h3>部署信息</h3><p>版本：{version?.version || '未知'} · 构建时间：{version?.buildTime || '未知'}</p><p>公网地址：{health?.publicBaseUrl || '未配置'}</p><p>App 固定地址：{FIXED_CLOUD_API_BASE_URL}</p><p>内部后端：127.0.0.1:3001（正式环境由 Nginx 转发）</p><p>数据目录：{health?.dataDir}</p><p>上传目录：{health?.uploadDir}</p><p>备份目录：{health?.backupDir}</p><p>磁盘可用：{health?.disk ? `${Math.round(health.disk.availableBytes / 1024 / 1024 / 1024)} GB` : '未检测到'}</p>{version?.apk?.available && <a className="button-link" href={apiUrl(`/api/app/apk?token=${encodeURIComponent(token)}`)}>下载当前 APK</a>}</section><section className="download-card"><div className="section-head"><h3>最近备份</h3><button type="button" className="ghost" onClick={loadHealth}>刷新</button></div>{backups.length === 0 ? <p className="hint">暂无备份文件。</p> : <div className="backup-list">{backups.map((backup) => <div key={backup.fileName} className="backup-row"><strong>{backup.fileName}</strong><span>{formatBytes(backup.size)}</span><span>{new Date(backup.createdAt).toLocaleString()}</span></div>)}</div>}</section><form className="panel-subform" onSubmit={restoreBackup}><h3>从备份恢复</h3><p className="hint">支持本系统一键备份生成的 ZIP。恢复前会自动生成当前安全备份，恢复后请重启后端服务。执行前请输入“确认恢复”。</p><input type="file" accept=".zip,.sqlite,.db" onChange={(event) => setBackupFile(event.target.files?.[0] || null)} /><input placeholder="输入：确认恢复" value={restorePhrase} onChange={(event) => setRestorePhrase(event.target.value)} /><button type="submit" disabled={!backupFile || busy || restorePhrase.trim() !== '确认恢复'}>上传并恢复</button>{restoreMessage && <p className="hint">{restoreMessage}</p>}</form></div>;
+  return <div className="view-stack"><div className="section-head"><div><h2>运行健康</h2><p className="hint">检查后端、数据库、上传目录、磁盘和云端访问地址。</p></div><a className="button-link" href={apiUrl(`/api/admin/backup?token=${encodeURIComponent(token)}`)}>一键备份</a></div>{health && <div className="check-grid"><div><strong>{health.status}</strong><span>后端状态</span></div><div><strong>{health.database ? '正常' : '异常'}</strong><span>数据库</span></div><div><strong>{health.uploadWritable ? '可写' : '不可写'}</strong><span>上传目录</span></div><div><strong>{queue.length}</strong><span>本机待同步</span></div></div>}<section className="download-card"><h3>部署信息</h3><p>版本：{version?.version || '未知'} · 构建时间：{version?.buildTime || '未知'}</p><p>公网地址：{health?.publicBaseUrl || '未配置'}</p><p>App 固定地址：{FIXED_CLOUD_API_BASE_URL}</p><p>后端模式：测试阶段直接开放 3001；正式域名模式再由 Nginx 转发</p><p>数据目录：{health?.dataDir}</p><p>上传目录：{health?.uploadDir}</p><p>备份目录：{health?.backupDir}</p><p>磁盘可用：{health?.disk ? `${Math.round(health.disk.availableBytes / 1024 / 1024 / 1024)} GB` : '未检测到'}</p>{version?.apk?.available && <a className="button-link" href={apiUrl(`/api/app/apk?token=${encodeURIComponent(token)}`)}>下载当前 APK</a>}</section><section className="download-card"><div className="section-head"><h3>最近备份</h3><button type="button" className="ghost" onClick={loadHealth}>刷新</button></div>{backups.length === 0 ? <p className="hint">暂无备份文件。</p> : <div className="backup-list">{backups.map((backup) => <div key={backup.fileName} className="backup-row"><strong>{backup.fileName}</strong><span>{formatBytes(backup.size)}</span><span>{new Date(backup.createdAt).toLocaleString()}</span></div>)}</div>}</section><form className="panel-subform" onSubmit={restoreBackup}><h3>从备份恢复</h3><p className="hint">支持本系统一键备份生成的 ZIP。恢复前会自动生成当前安全备份，恢复后请重启后端服务。执行前请输入“确认恢复”。</p><input type="file" accept=".zip,.sqlite,.db" onChange={(event) => setBackupFile(event.target.files?.[0] || null)} /><input placeholder="输入：确认恢复" value={restorePhrase} onChange={(event) => setRestorePhrase(event.target.value)} /><button type="submit" disabled={!backupFile || busy || restorePhrase.trim() !== '确认恢复'}>上传并恢复</button>{restoreMessage && <p className="hint">{restoreMessage}</p>}</form></div>;
 }
 
 function EmptyState({ title, text }) {

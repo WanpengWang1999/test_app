@@ -209,10 +209,11 @@ function validatePhone(phone) {
 }
 
 function selectUserRows(whereSql = '', params = []) {
+  const visibleWhereSql = whereSql ? `${whereSql} AND deleted_at IS NULL` : 'WHERE deleted_at IS NULL';
   return db.prepare(`SELECT id, username, phone, display_name AS displayName, company, role, status,
       approved_by AS approvedBy, approved_at AS approvedAt, rejected_by AS rejectedBy, rejected_at AS rejectedAt,
       deleted_at AS deletedAt, created_at AS createdAt
-    FROM users ${whereSql}
+    FROM users ${visibleWhereSql}
     ORDER BY status = 'pending' DESC, deleted_at IS NOT NULL, id`).all(...params);
 }
 
@@ -1310,7 +1311,7 @@ app.get('/api/admin/version', auth, (_req, res) => {
 
 app.get('/api/app/apk', auth, (req, res) => {
   const apk = getApkInfo();
-  if (!apk.available) return res.status(404).json({ error: '当前电脑还没有生成 APK，请先运行 npm.cmd run android:apk' });
+  if (!apk.available) return res.status(404).json({ error: '当前服务器还没有生成 APK，请先生成并上传 APK' });
   res.download(apk.path, apk.fileName);
 });
 
@@ -1393,8 +1394,13 @@ server.listen(port, host, () => {
   console.log(`后端服务已启动: http://${host}:${port}`);
   console.log(`本机检查: http://127.0.0.1:${port}/api/public/health`);
   if (PUBLIC_BASE_URL) {
-    console.log(`正式公网访问: ${PUBLIC_BASE_URL}`);
-    console.log('正式部署请通过 Nginx/HTTPS 访问，不要开放公网 3001。');
+    const isDirectTest = host === '0.0.0.0' && PUBLIC_BASE_URL.includes(`:${port}`);
+    console.log(`${isDirectTest ? '测试公网访问' : '正式公网访问'}: ${PUBLIC_BASE_URL}`);
+    if (isDirectTest) {
+      console.log(`当前为测试模式：公网直接访问 ${port} 端口。域名、HTTPS 和 Nginx 完成后再切换正式模式。`);
+    } else {
+      console.log('正式部署请通过 Nginx/HTTPS 访问，不要开放公网 3001。');
+    }
   } else {
     for (const url of getLanAddresses(port)) console.log(`局域网后端: ${url}`);
   }

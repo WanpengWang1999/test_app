@@ -1,34 +1,34 @@
-# 云端正式部署说明
+# 云端测试部署说明
 
-本文用于把“工程照片采集”部署为正式云端访问方式。正式入口统一为：
+本文用于把“工程照片采集”部署为当前公网 IP 测试访问方式。域名备案、HTTPS 和 Nginx 反向代理完成前，入口统一为：
 
 ```text
 http://114.55.109.150:3001
 ```
 
-Node 后端只监听服务器本机 `127.0.0.1:3001`，公网通过 Nginx 的 `80/443` 访问。
+Node 后端在测试阶段监听 `0.0.0.0:3001`，手机和网页直接访问公网 IP。后续切换正式域名时，再改为 `127.0.0.1:3001` 并由 Nginx 提供 `80/443`。
 
-## 1. DNS 和安全组
+## 1. 安全组
 
-1. 在域名 DNS 中添加 A 记录：
-
-```text
-域名 -> 服务器公网 IP（域名备案和 HTTPS 完成后再启用）
-```
-
-2. 云服务器安全组只开放：
+当前测试阶段云服务器安全组开放：
 
 ```text
 22
-80
-443
+3001
 ```
 
-3. 正式使用时关闭公网：
+暂时不要使用：
+
+```text
+80
+443
+5173
+```
+
+正式域名、备案和 HTTPS 完成后，再关闭公网：
 
 ```text
 3001
-5173
 ```
 
 ## 2. 服务器环境
@@ -60,11 +60,11 @@ cp .env.cloud.example .env
 nano .env
 ```
 
-正式 `.env` 关键项：
+测试 `.env` 关键项：
 
 ```text
 NODE_ENV=production
-HOST=127.0.0.1
+HOST=0.0.0.0
 PORT=3001
 DATA_DIR=/data/telecom-photo
 PUBLIC_BASE_URL=http://114.55.109.150:3001
@@ -141,7 +141,7 @@ sudo journalctl -u telecom-photo -f
 
 ## 6. Nginx 和 HTTPS
 
-复制示例配置：
+当前测试模式不需要 Nginx 和 HTTPS。域名备案完成后，再复制示例配置：
 
 ```bash
 sudo cp deploy/nginx-cloud.conf.example /etc/nginx/sites-available/telecom-photo
@@ -159,7 +159,7 @@ sudo certbot --nginx -d 待备案域名
 证书完成后检查：
 
 ```bash
-curl http://114.55.109.150:3001/api/public/health
+curl https://正式域名/api/public/health
 ```
 
 ## 7. 初始登录和账号注册

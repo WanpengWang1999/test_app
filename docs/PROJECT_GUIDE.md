@@ -10,7 +10,7 @@
 - IndexedDB 离线同步队列。
 - Capacitor Android App 壳。
 
-正式云端入口为 `http://114.55.109.150:3001`。Web 端同源访问后端，Android App 固定连接该域名。
+当前测试云端入口为 `http://114.55.109.150:3001`。Web 端同源访问后端，Android App 固定连接该测试地址。域名备案和 HTTPS 完成后再切换正式入口。
 
 ## 主要目录
 
@@ -26,7 +26,7 @@
 | `server/db.js` | SQLite 初始化、迁移、默认正式管理员和基础模板数据。 |
 | `server/accountPolicy.js` | 账号注册审批、状态和角色等级策略。 |
 | `deploy/nginx-cloud.conf.example` | 正式域名 Nginx 反向代理示例。 |
-| `docs/CLOUD_TEST_DEPLOY.md` | 云端正式部署说明。 |
+| `docs/CLOUD_TEST_DEPLOY.md` | 当前公网 IP 测试部署说明。 |
 
 ## 核心业务
 
@@ -93,12 +93,12 @@ node server\accountPolicy.test.js
 node scripts\mock-verify.mjs
 ```
 
-## 正式部署
+## 云端测试部署
 
-正式部署使用：
+当前测试部署使用：
 
 ```text
 http://114.55.109.150:3001
 ```
 
-Node 后端监听 `127.0.0.1:3001`，由 Nginx 对外提供 HTTPS。详细步骤见 `docs/CLOUD_TEST_DEPLOY.md`。
+Node 后端测试阶段监听 `0.0.0.0:3001`，公网直接访问测试端口。域名备案和 HTTPS 完成后再切换为 Nginx 反向代理模式。详细步骤见 `docs/CLOUD_TEST_DEPLOY.md`。
